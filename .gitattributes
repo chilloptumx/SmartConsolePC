@@ -1,0 +1,14 @@
+# Normalize text files and keep sensible line endings across Windows/Linux.
+* text=auto
+
+# Shell scripts should always be LF (for WSL/Linux).
+*.sh text eol=lf
+
+# PowerShell scripts are commonly CRLF on Windows.
+*.ps1 text eol=crlf
+
+# Database dumps / archives should be treated as binary (no eol conversion).
+*.sql -text
+*.tar.gz -text
+
+

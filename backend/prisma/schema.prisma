@@ -1,0 +1,191 @@
+// Prisma schema for Windows PC Health Monitor
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Machine model - represents Windows PCs being monitored
+model Machine {
+  id          String   @id @default(uuid())
+  hostname    String   @unique
+  ipAddress   String
+  pcModel     String?  // e.g., "Dell Optiplex HP 7000"
+  status      MachineStatus @default(UNKNOWN)
+  lastSeen    DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  // Relationships
+  checkResults CheckResult[]
+  jobMachines  JobMachine[]
+  auditEvents  AuditEvent[]
+  
+  @@map("machines")
+}
+
+enum MachineStatus {
+  ONLINE
+  OFFLINE
+  WARNING
+  ERROR
+  UNKNOWN
+}
+
+// Registry check configuration
+model RegistryCheck {
+  id            String   @id @default(uuid())
+  name          String
+  registryPath  String   // e.g., "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion"
+  valueName     String?  // Specific value to check, null means check if key exists
+  expectedValue String?  // Expected value (optional)
+  description   String?
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  @@map("registry_checks")
+}
+
+// File check configuration
+model FileCheck {
+  id          String   @id @default(uuid())
+  name        String
+  filePath    String   // e.g., "C:\Windows\System32\drivers\etc\hosts"
+  checkExists Boolean  @default(true)
+  checkSize   Boolean  @default(false)
+  checkCreated Boolean @default(false)
+  checkModified Boolean @default(false)
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  @@map("file_checks")
+}
+
+// Scheduled job configuration
+model ScheduledJob {
+  id              String   @id @default(uuid())
+  name            String
+  jobType         JobType
+  cronExpression  String   // e.g., "*/5 * * * *" for every 5 minutes
+  isActive        Boolean  @default(true)
+  lastRunAt       DateTime?
+  nextRunAt       DateTime?
+  targetAll       Boolean  @default(true) // If true, targets all machines
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  // Relationships
+  targetMachines  JobMachine[]
+  
+  @@map("scheduled_jobs")
+}
+
+enum JobType {
+  PING
+  REGISTRY_CHECK
+  FILE_CHECK
+  USER_INFO
+  SYSTEM_INFO
+  FULL_CHECK
+}
+
+// Junction table for many-to-many relationship between jobs and machines
+model JobMachine {
+  id        String @id @default(uuid())
+  jobId     String
+  machineId String
+  
+  job       ScheduledJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  machine   Machine      @relation(fields: [machineId], references: [id], onDelete: Cascade)
+  
+  @@unique([jobId, machineId])
+  @@map("job_machines")
+}
+
+// Check results storage
+model CheckResult {
+  id         String   @id @default(uuid())
+  machineId  String
+  checkType  JobType
+  checkName  String   // Name of the specific check
+  status     CheckStatus
+  resultData Json     // Flexible JSON storage for any check result
+  message    String?  // Optional message/error description
+  duration   Int?     // Duration in milliseconds
+  createdAt  DateTime @default(now())
+  
+  // Relationships
+  machine    Machine  @relation(fields: [machineId], references: [id], onDelete: Cascade)
+  
+  @@index([machineId, createdAt])
+  @@index([checkType, createdAt])
+  @@map("check_results")
+}
+
+enum CheckStatus {
+  SUCCESS
+  FAILED
+  WARNING
+  TIMEOUT
+}
+
+enum AuditLevel {
+  INFO
+  WARN
+  ERROR
+}
+
+// Job Monitor / Audit log - records notable actions across the system.
+model AuditEvent {
+  id         String     @id @default(uuid())
+  eventType  String
+  level      AuditLevel @default(INFO)
+  message    String
+  machineId  String?
+  entityType String?
+  entityId   String?
+  metadata   Json
+  createdAt  DateTime   @default(now())
+
+  machine    Machine?   @relation(fields: [machineId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([eventType, createdAt])
+  @@index([machineId, createdAt])
+  @@map("audit_events")
+}
+
+// Email report configuration
+model EmailReport {
+  id            String   @id @default(uuid())
+  name          String
+  recipients    String[] // Array of email addresses
+  schedule      String   // Cron expression
+  filterConfig  Json     // JSON object with filter criteria
+  columns       String[] // Which columns/fields to include
+  isActive      Boolean  @default(true)
+  lastSentAt    DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  @@map("email_reports")
+}
+
+// Application settings/configuration
+model AppSettings {
+  id        String   @id @default(uuid())
+  key       String   @unique
+  value     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@map("app_settings")
+}
+

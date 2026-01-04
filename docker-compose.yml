@@ -1,0 +1,103 @@
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: healthcheck-postgres
+    environment:
+      POSTGRES_USER: healthcheck
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-healthcheck_dev}
+      POSTGRES_DB: healthcheck
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - healthcheck-network
+
+  # Redis for Job Queue
+  redis:
+    image: redis:7-alpine
+    container_name: healthcheck-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - healthcheck-network
+
+  # Backend API
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: healthcheck-backend
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      DATABASE_URL: postgresql://healthcheck:${POSTGRES_PASSWORD:-healthcheck_dev}@postgres:5432/healthcheck
+      REDIS_URL: redis://redis:6379
+      PORT: 5000
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER}
+      SMTP_PASSWORD: ${SMTP_PASSWORD}
+      SMTP_FROM: ${SMTP_FROM}
+      WINDOWS_ADMIN_USER: ${WINDOWS_ADMIN_USER}
+      WINDOWS_ADMIN_PASSWORD: ${WINDOWS_ADMIN_PASSWORD}
+    ports:
+      - "${BACKEND_HOST_PORT:-5001}:5000"
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+      - ./backend/logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - healthcheck-network
+    # Ensure schema is present before starting the API
+    command: sh -c "npm run prisma:generate && npm run prisma:migrate && npm run build && npm start"
+
+  # Frontend React App
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: healthcheck-frontend
+    environment:
+      # Use same-origin + Vite proxy for local Docker dev to avoid host-port mismatches (5000 vs 5001).
+      # (This intentionally ignores any VITE_API_URL value in the root .env file.)
+      VITE_API_URL: ""
+    ports:
+      - "${FRONTEND_HOST_PORT:-3001}:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+    networks:
+      - healthcheck-network
+    # Vite must bind to 0.0.0.0 inside the container so the host can access it via port mapping.
+    command: npm run dev -- --host 0.0.0.0 --port 3000
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  healthcheck-network:
+    driver: bridge
+
