@@ -11,16 +11,18 @@ async function main() {
     console.log('Seeding default user checks...');
     
     // PowerShell scripts for reference
-    const currentUserScript = `# Get currently logged-in user
+    const currentOnlyScript = `# Current logged-in user (wrapped for UI)
+$result = @{}
+
 try {
   $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
   $u = $cs.UserName
   if ($u) {
-    @{ Username = $u; Source = 'Win32_ComputerSystem' } | ConvertTo-Json
+    $result.currentUser = @{ Username = $u; Source = 'Win32_ComputerSystem' }
   } else {
     $users = quser 2>&1
     if ($LASTEXITCODE -eq 0) {
-      $users | Select-Object -Skip 1 | ForEach-Object {
+      $result.currentUser = $users | Select-Object -Skip 1 | ForEach-Object {
         $line = $_ -replace '\\s+', ','
         $parts = $line -split ','
         @{
@@ -32,22 +34,26 @@ try {
           LogonTime = $parts[5..$parts.Length] -join ' '
           Source = 'quser'
         }
-      } | ConvertTo-Json
+      }
     } else {
-      @{ NoUserLoggedIn = $true } | ConvertTo-Json
+      $result.currentUser = @{ NoUserLoggedIn = $true }
     }
   }
 } catch {
-  @{ NoUserLoggedIn = $true; error = $_.Exception.Message } | ConvertTo-Json
-}`;
+  $result.currentUser = @{ NoUserLoggedIn = $true; error = $_.Exception.Message }
+}
 
-    const lastUserScript = `# Get last logged-in user from registry
+$result | ConvertTo-Json -Depth 3`;
+
+    const lastOnlyScript = `# Last logged-in user (wrapped for UI)
+$result = @{}
 $lastUser = Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Authentication\\LogonUI' -Name 'LastLoggedOnUser' -ErrorAction SilentlyContinue
 if ($lastUser) {
-  @{ LastUser = $lastUser.LastLoggedOnUser } | ConvertTo-Json
+  $result.lastUser = @{ LastUser = $lastUser.LastLoggedOnUser }
 } else {
-  @{ LastUser = 'Unknown' } | ConvertTo-Json
-}`;
+  $result.lastUser = @{ LastUser = 'Unknown' }
+}
+$result | ConvertTo-Json -Depth 3`;
 
     const currentAndLastScript = `# Get both current and last logged-in user
 $result = @{}
@@ -95,7 +101,7 @@ $result | ConvertTo-Json -Depth 3`;
     await prisma.userCheck.create({
       data: {
         name: 'Current and Last User',
-        checkType: 'CURRENT_AND_LAST',
+        checkType: 'CUSTOM',
         description: 'Collects both current logged-in user and last logged-in user information from the registry. Uses Win32_ComputerSystem and quser for current user, registry LogonUI for last user.',
         customScript: currentAndLastScript,
         isActive: true,
@@ -105,9 +111,9 @@ $result | ConvertTo-Json -Depth 3`;
     await prisma.userCheck.create({
       data: {
         name: 'Current User Only',
-        checkType: 'CURRENT_ONLY',
+        checkType: 'CUSTOM',
         description: 'Collects only the currently logged-in user information using Win32_ComputerSystem or quser command',
-        customScript: currentUserScript,
+        customScript: currentOnlyScript,
         isActive: false, // Disabled by default since Current and Last is more comprehensive
       },
     });
@@ -115,9 +121,9 @@ $result | ConvertTo-Json -Depth 3`;
     await prisma.userCheck.create({
       data: {
         name: 'Last User Only',
-        checkType: 'LAST_ONLY',
+        checkType: 'CUSTOM',
         description: 'Collects only the last logged-in user from the registry (HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Authentication\\LogonUI)',
-        customScript: lastUserScript,
+        customScript: lastOnlyScript,
         isActive: false, // Disabled by default
       },
     });
@@ -151,7 +157,7 @@ $lastBoot = $os.LastBootUpTime
     await prisma.systemCheck.create({
       data: {
         name: 'System Information',
-        checkType: 'SYSTEM_INFO',
+        checkType: 'CUSTOM',
         description: 'Collects comprehensive system information using Win32_OperatingSystem and Win32_ComputerSystem CIM classes. Outputs: ComputerName, Manufacturer, Model, TotalMemoryGB, OSVersion, OSArchitecture, LastBootTime, UptimeDays',
         customScript: systemInfoScript,
         isActive: true,
@@ -233,6 +239,166 @@ foreach ($adapter in $adapters) {
     console.log('✓ System checks seeded (4 checks: 1 default + 3 examples)');
   } else {
     console.log(`Skipping system checks seed (${existingSystemChecks} already exist)`);
+  }
+
+  // Ensure seeded User/System checks are stored as CUSTOM so the UI can show the actual script used.
+  // This intentionally converts non-custom rows into custom-script rows using equivalent PowerShell.
+  {
+    const currentOnlyScript = `# Current logged-in user (wrapped for UI)
+$result = @{}
+
+try {
+  $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
+  $u = $cs.UserName
+  if ($u) {
+    $result.currentUser = @{ Username = $u; Source = 'Win32_ComputerSystem' }
+  } else {
+    $users = quser 2>&1
+    if ($LASTEXITCODE -eq 0) {
+      $result.currentUser = $users | Select-Object -Skip 1 | ForEach-Object {
+        $line = $_ -replace '\\s+', ','
+        $parts = $line -split ','
+        @{
+          Username = $parts[0]
+          SessionName = $parts[1]
+          ID = $parts[2]
+          State = $parts[3]
+          IdleTime = $parts[4]
+          LogonTime = $parts[5..$parts.Length] -join ' '
+          Source = 'quser'
+        }
+      }
+    } else {
+      $result.currentUser = @{ NoUserLoggedIn = $true }
+    }
+  }
+} catch {
+  $result.currentUser = @{ NoUserLoggedIn = $true; error = $_.Exception.Message }
+}
+
+$result | ConvertTo-Json -Depth 3`;
+
+    const lastOnlyScript = `# Last logged-in user (wrapped for UI)
+$result = @{}
+$lastUser = Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Authentication\\LogonUI' -Name 'LastLoggedOnUser' -ErrorAction SilentlyContinue
+if ($lastUser) {
+  $result.lastUser = @{ LastUser = $lastUser.LastLoggedOnUser }
+} else {
+  $result.lastUser = @{ LastUser = 'Unknown' }
+}
+$result | ConvertTo-Json -Depth 3`;
+
+    const currentAndLastScript = `# Get both current and last logged-in user
+$result = @{}
+
+# Current User
+try {
+  $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
+  $u = $cs.UserName
+  if ($u) {
+    $result.currentUser = @{ Username = $u; Source = 'Win32_ComputerSystem' }
+  } else {
+    $users = quser 2>&1
+    if ($LASTEXITCODE -eq 0) {
+      $result.currentUser = $users | Select-Object -Skip 1 | ForEach-Object {
+        $line = $_ -replace '\\s+', ','
+        $parts = $line -split ','
+        @{
+          Username = $parts[0]
+          SessionName = $parts[1]
+          ID = $parts[2]
+          State = $parts[3]
+          IdleTime = $parts[4]
+          LogonTime = $parts[5..$parts.Length] -join ' '
+          Source = 'quser'
+        }
+      }
+    } else {
+      $result.currentUser = @{ NoUserLoggedIn = $true }
+    }
+  }
+} catch {
+  $result.currentUser = @{ NoUserLoggedIn = $true; error = $_.Exception.Message }
+}
+
+# Last User
+$lastUser = Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Authentication\\LogonUI' -Name 'LastLoggedOnUser' -ErrorAction SilentlyContinue
+if ($lastUser) {
+  $result.lastUser = @{ LastUser = $lastUser.LastLoggedOnUser }
+} else {
+  $result.lastUser = @{ LastUser = 'Unknown' }
+}
+
+$result | ConvertTo-Json -Depth 3`;
+
+    // Convert any built-in user check types into CUSTOM, ensuring scripts are populated and UI-friendly.
+    const userChecks = await prisma.userCheck.findMany();
+    for (const uc of userChecks) {
+      if (uc.checkType === 'CUSTOM') continue;
+
+      let script: string | null = null;
+      const n = String(uc.name ?? '').trim();
+      if (n === 'Current and Last User') script = currentAndLastScript;
+      if (n === 'Current User Only') script = currentOnlyScript;
+      if (n === 'Last User Only') script = lastOnlyScript;
+
+      // Fallback by prior checkType if name doesn't match
+      if (!script) {
+        const t = String(uc.checkType ?? '').trim();
+        if (t === 'CURRENT_AND_LAST') script = currentAndLastScript;
+        else if (t === 'CURRENT_ONLY') script = currentOnlyScript;
+        else if (t === 'LAST_ONLY') script = lastOnlyScript;
+      }
+
+      await prisma.userCheck.update({
+        where: { id: uc.id },
+        data: {
+          checkType: 'CUSTOM',
+          ...(script ? { customScript: script } : {}),
+        },
+      });
+    }
+
+    // Convert SYSTEM_INFO system checks into CUSTOM so the UI shows the actual script.
+    const systemInfoScript = `# Collect comprehensive system information
+$os = Get-CimInstance Win32_OperatingSystem
+$cs = Get-CimInstance Win32_ComputerSystem
+$lastBoot = $os.LastBootUpTime
+
+@{
+  ComputerName = $cs.Name
+  Manufacturer = $cs.Manufacturer
+  Model = $cs.Model
+  TotalMemoryGB = [math]::Round($cs.TotalPhysicalMemory / 1GB, 2)
+  OSVersion = $os.Caption
+  OSArchitecture = $os.OSArchitecture
+  LastBootTime = $lastBoot.ToString('o')
+  UptimeDays = [math]::Round(((Get-Date) - $lastBoot).TotalDays, 2)
+} | ConvertTo-Json`;
+
+    const sysChecks = await prisma.systemCheck.findMany();
+    for (const sc of sysChecks) {
+      if (sc.checkType === 'CUSTOM') continue;
+
+      const t = String(sc.checkType ?? '').trim();
+      if (t === 'SYSTEM_INFO') {
+        await prisma.systemCheck.update({
+          where: { id: sc.id },
+          data: {
+            checkType: 'CUSTOM',
+            customScript: sc.customScript ?? systemInfoScript,
+          },
+        });
+      } else {
+        // Unknown non-custom type: convert to CUSTOM but keep existing script if present.
+        await prisma.systemCheck.update({
+          where: { id: sc.id },
+          data: {
+            checkType: 'CUSTOM',
+          },
+        });
+      }
+    }
   }
 
   // Ensure newer system checks are present even if the DB was already seeded previously.

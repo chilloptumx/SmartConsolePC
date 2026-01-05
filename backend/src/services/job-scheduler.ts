@@ -497,15 +497,18 @@ async function processSingleMachine(machineId: string, jobType: string, checkCon
           let sysResult: PowerShellResult;
           if (sc.checkType === 'SYSTEM_INFO') {
             sysResult = await getSystemInfo(connection);
-            const sysData = parseResultData(sysResult.output);
-            newPcModel = computePcModelFromSystemInfo(sysData);
           } else if (sc.checkType === 'CUSTOM' && sc.customScript) {
             sysResult = await executePowerShell(sc.customScript, connection);
           } else {
             // Default to SYSTEM_INFO
             sysResult = await getSystemInfo(connection);
+          }
+
+          // If the script returns system fields (Manufacturer/Model), update stored pcModel even for CUSTOM checks.
+          {
             const sysData = parseResultData(sysResult.output);
-            newPcModel = computePcModelFromSystemInfo(sysData);
+            const maybeModel = computePcModelFromSystemInfo(sysData);
+            if (maybeModel) newPcModel = maybeModel;
           }
 
           await prisma.checkResult.create({
@@ -551,15 +554,18 @@ async function processSingleMachine(machineId: string, jobType: string, checkCon
             
             if (sc.checkType === 'SYSTEM_INFO') {
               sysResult = await getSystemInfo(connection);
-              const sysData = parseResultData(sysResult.output);
-              newPcModel = computePcModelFromSystemInfo(sysData);
             } else if (sc.checkType === 'CUSTOM' && sc.customScript) {
               sysResult = await executePowerShell(sc.customScript, connection);
             } else {
               // Default to SYSTEM_INFO
               sysResult = await getSystemInfo(connection);
+            }
+
+            // If the script returns system fields (Manufacturer/Model), update stored pcModel even for CUSTOM checks.
+            {
               const sysData = parseResultData(sysResult.output);
-              newPcModel = computePcModelFromSystemInfo(sysData);
+              const maybeModel = computePcModelFromSystemInfo(sysData);
+              if (maybeModel) newPcModel = maybeModel;
             }
 
             if (!sysResult.success) anyFailed = true;
