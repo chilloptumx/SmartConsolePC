@@ -185,25 +185,25 @@ class ApiClient {
 
   // Locations
   async getLocations() {
-    return this.request<any[]>('/api/config/locations');
+    return this.request<any[]>('/api/machines/locations');
   }
 
   async createLocation(data: { name: string }) {
-    return this.request<any>('/api/config/locations', {
+    return this.request<any>('/api/machines/locations', {
       method: 'POST',
       body: JSON.stringify(data),
     });
   }
 
   async updateLocation(id: string, data: { name: string }) {
-    return this.request<any>(`/api/config/locations/${id}`, {
+    return this.request<any>(`/api/machines/locations/${id}`, {
       method: 'PUT',
       body: JSON.stringify(data),
     });
   }
 
   async deleteLocation(id: string) {
-    return this.request<any>(`/api/config/locations/${id}`, {
+    return this.request<any>(`/api/machines/locations/${id}`, {
       method: 'DELETE',
     });
   }

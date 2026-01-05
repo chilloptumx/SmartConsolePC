@@ -17,6 +17,100 @@ router.get('/', async (req, res) => {
   res.json(machines);
 });
 
+// ========== LOCATION DEFINITIONS ==========
+// NOTE: Must be defined BEFORE `/:id` routes so `/locations` isn't captured as an id param.
+
+router.get('/locations', async (req, res) => {
+  const locations = await prisma.locationDefinition.findMany({
+    orderBy: [{ name: 'asc' }],
+    select: {
+      id: true,
+      name: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+  });
+  res.json(locations);
+});
+
+router.post('/locations', async (req, res) => {
+  const { name } = req.body ?? {};
+  if (!name) return res.status(400).json({ error: 'name is required' });
+
+  try {
+    const created = await prisma.locationDefinition.create({
+      data: {
+        name: String(name),
+        // Manual assignment mode: no IP range required.
+        startIp: null,
+        endIp: null,
+        startIpInt: null,
+        endIpInt: null,
+      },
+      select: { id: true, name: true, createdAt: true, updatedAt: true },
+    });
+
+    await logAuditEvent({
+      eventType: 'LOCATION_CREATED',
+      message: `Location created: ${created.name}`,
+      entityType: 'LocationDefinition',
+      entityId: created.id,
+      metadata: { ...created },
+    });
+
+    res.status(201).json(created);
+  } catch (error: any) {
+    if (error.code === 'P2002') {
+      return res.status(409).json({ error: 'Location name already exists' });
+    }
+    throw error;
+  }
+});
+
+router.put('/locations/:id', async (req, res) => {
+  const { name } = req.body ?? {};
+  if (!name) return res.status(400).json({ error: 'name is required' });
+
+  const existing = await prisma.locationDefinition.findUnique({ where: { id: req.params.id } });
+  if (!existing) return res.status(404).json({ error: 'Location not found' });
+
+  const updated = await prisma.locationDefinition.update({
+    where: { id: req.params.id },
+    data: { name: String(name) },
+    select: { id: true, name: true, createdAt: true, updatedAt: true },
+  });
+
+  await logAuditEvent({
+    eventType: 'LOCATION_UPDATED',
+    message: `Location updated: ${updated.name}`,
+    entityType: 'LocationDefinition',
+    entityId: updated.id,
+    metadata: { before: { id: existing.id, name: existing.name }, after: updated },
+  });
+
+  res.json(updated);
+});
+
+router.delete('/locations/:id', async (req, res) => {
+  const existing = await prisma.locationDefinition.findUnique({
+    where: { id: req.params.id },
+    select: { id: true, name: true },
+  });
+  if (!existing) return res.status(404).json({ error: 'Location not found' });
+
+  await prisma.locationDefinition.delete({ where: { id: req.params.id } });
+
+  logger.info(`Deleted location: ${req.params.id}`);
+  await logAuditEvent({
+    eventType: 'LOCATION_DELETED',
+    message: `Location deleted: ${existing.name}`,
+    entityType: 'LocationDefinition',
+    entityId: existing.id,
+    metadata: { ...existing },
+  });
+  res.json({ success: true });
+});
+
 // Get single machine
 router.get('/:id', async (req, res) => {
   const machine = await prisma.machine.findUnique({
