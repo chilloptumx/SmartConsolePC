@@ -16,6 +16,8 @@ It runs locally via Docker Compose:
 ### High-level user flows
 - **Configuration**: define registry/file/user/system checks, machines, schedules, settings
 - **Dashboard**: view machine status grid, run full checks, view latest collected objects
+  - Summary cards (**Total / Online / Offline / Warnings**) are clickable filters for the machine list
+  - Clicking a machine name deep-links into **PC Viewer** for that specific machine
 - **AdHoc Scan**: run selected checks for a single machine, then export a table
 - **Data Viewer / PC Viewer**: explore historical results
 

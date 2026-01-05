@@ -245,9 +245,15 @@ export function PcViewer() {
       try {
         const data = await api.getMachines();
         setMachines(data);
-        if (!selectedMachineId && data.length > 0) {
-          setSelectedMachineId(data[0].id);
-        }
+        // Prefer URL-selected machineId (deep link from Dashboard).
+        // IMPORTANT: use a functional update so we don't overwrite a machineId that was
+        // set by the URL effect (avoids stale-closure bugs that pick the first machine).
+        const urlMachineId = searchParams.get('machineId');
+        setSelectedMachineId((prev) => {
+          if (prev) return prev;
+          if (urlMachineId && data.some((m) => m?.id === urlMachineId)) return urlMachineId;
+          return data.length > 0 ? data[0].id : '';
+        });
       } catch (e) {
         toast.error('Failed to load machines');
       }

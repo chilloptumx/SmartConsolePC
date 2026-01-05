@@ -44,4 +44,11 @@ docker compose up -d --force-recreate
 The containers mount the source directories and use a dedicated `/app/node_modules` volume.
 Build output (`dist/`) is generated in-container via `npm run build` (backend) or Vite (frontend).
 
+### Running against an external Postgres (optional)
+If you want to run the backend against a Postgres instance **outside** Docker (local Postgres install, VM, managed Postgres):
+- Use the scripts in `Database build/` to generate/apply a **schema-only** SQL file (`schema.sql`)
+- Point `DATABASE_URL` at your external Postgres (see `Database build/env.external-postgres.example`)
+
+This is optional — the default Docker Compose workflow already includes Postgres.
+
 

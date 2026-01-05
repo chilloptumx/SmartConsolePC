@@ -3,7 +3,7 @@ import { Button } from '../components/ui/button';
 import { Card } from '../components/ui/card';
 import { StatusBadge } from '../components/StatusBadge';
 import { toast } from 'sonner';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription } from '../components/ui/dialog';
 import { Input } from '../components/ui/input';
@@ -17,6 +17,9 @@ export function Dashboard() {
   const [isExportOpen, setIsExportOpen] = useState(false);
   const [machines, setMachines] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+
+  type StatusFilter = 'all' | 'online' | 'offline' | 'warnings';
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   
   // Track which columns to display in the machine status table
   const [displayColumns, setDisplayColumns] = useState({
@@ -324,7 +327,7 @@ export function Dashboard() {
       headers.push(checkName || key);
     }
 
-    const rows: string[][] = machines.map((machine) => {
+    const rows: string[][] = filteredMachines.map((machine) => {
       const row: string[] = [];
       const loc = (machine as any).location?.name || 'Undefined';
       row.push(machine.hostname ? `${machine.hostname} (${loc})` : '');
@@ -344,7 +347,7 @@ export function Dashboard() {
   };
 
   const exportMachineStatus = (format: 'csv' | 'html' | 'md') => {
-    if (machines.length === 0) {
+    if (filteredMachines.length === 0) {
       toast.error('No machines to export');
       return;
     }
@@ -457,18 +460,49 @@ export function Dashboard() {
     }
   };
 
+  const isOnlineMachine = (m: any) => m?.status === 'ONLINE' || m?.status === 'WARNING';
+  const isOfflineMachine = (m: any) => m?.status === 'OFFLINE' || m?.status === 'UNKNOWN' || m?.status === 'ERROR';
+  const isWarningMachine = (m: any) => m?.status === 'WARNING';
+
+  const filteredMachines = useMemo(() => {
+    switch (statusFilter) {
+      case 'online':
+        return machines.filter(isOnlineMachine);
+      case 'offline':
+        return machines.filter(isOfflineMachine);
+      case 'warnings':
+        return machines.filter(isWarningMachine);
+      default:
+        return machines;
+    }
+  }, [machines, statusFilter]);
+
+  const setFilter = (next: StatusFilter) => {
+    if (next === 'all') {
+      setStatusFilter('all');
+      return;
+    }
+    setStatusFilter((prev) => (prev === next ? 'all' : next));
+  };
+
+  const cardButtonClass = (active: boolean) =>
+    `w-full text-left bg-slate-900 border border-slate-800 p-6 rounded-xl cursor-pointer select-none hover:bg-slate-800/30 active:scale-[0.99] ${
+      active ? 'ring-2 ring-cyan-500 ring-inset' : ''
+    }`;
+
   useEffect(() => {
-    refreshLatestObjectColumns(machines, selectedObjectKeys);
+    // Keep dashboard dynamic columns in sync with what is visible in the table.
+    refreshLatestObjectColumns(filteredMachines, selectedObjectKeys);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [machines, selectedObjectKeys]);
+  }, [filteredMachines, selectedObjectKeys]);
 
   const stats = {
     total: machines.length,
     // Treat WARNING as still online/reachable; treat UNKNOWN + ERROR as needing attention/offline.
     // (There is currently no separate "Errors" summary card.)
-    online: machines.filter((m) => m.status === 'ONLINE' || m.status === 'WARNING').length,
-    offline: machines.filter((m) => m.status === 'OFFLINE' || m.status === 'UNKNOWN' || m.status === 'ERROR').length,
-    warnings: machines.filter((m) => m.status === 'WARNING').length,
+    online: machines.filter(isOnlineMachine).length,
+    offline: machines.filter(isOfflineMachine).length,
+    warnings: machines.filter(isWarningMachine).length,
   };
 
   const badgeStatus = (status?: string) => {
@@ -601,48 +635,85 @@ export function Dashboard() {
 
       {/* Summary Cards */}
       <div className="grid grid-cols-4 gap-6 mb-8">
-        <Card className="bg-slate-900 border-slate-800 p-6">
+        <button
+          type="button"
+          aria-pressed={statusFilter === 'all'}
+          onClick={() => setFilter('all')}
+          className={cardButtonClass(statusFilter === 'all')}
+        >
           <div className="flex items-center justify-between mb-2">
             <span className="text-slate-400 text-sm">Total Machines</span>
             <TrendingUp className="w-4 h-4 text-emerald-400" />
           </div>
           <div className="text-3xl font-semibold text-slate-200">{stats.total}</div>
           <div className="text-xs text-emerald-400 mt-2">+2 this week</div>
-        </Card>
+        </button>
 
-        <Card className="bg-slate-900 border-slate-800 p-6">
+        <button
+          type="button"
+          aria-pressed={statusFilter === 'online'}
+          onClick={() => setFilter('online')}
+          className={cardButtonClass(statusFilter === 'online')}
+        >
           <div className="flex items-center justify-between mb-2">
             <span className="text-slate-400 text-sm">Online</span>
             <div className="w-2 h-2 bg-emerald-400 rounded-full" />
           </div>
           <div className="text-3xl font-semibold text-emerald-400">{stats.online}</div>
           <div className="text-xs text-slate-400 mt-2">{Math.round((stats.online / stats.total) * 100)}% uptime</div>
-        </Card>
+        </button>
 
-        <Card className="bg-slate-900 border-slate-800 p-6">
+        <button
+          type="button"
+          aria-pressed={statusFilter === 'offline'}
+          onClick={() => setFilter('offline')}
+          className={cardButtonClass(statusFilter === 'offline')}
+        >
           <div className="flex items-center justify-between mb-2">
             <span className="text-slate-400 text-sm">Offline</span>
             <div className="w-2 h-2 bg-slate-400 rounded-full" />
           </div>
           <div className="text-3xl font-semibold text-slate-400">{stats.offline}</div>
           <div className="text-xs text-slate-500 mt-2">Needs attention</div>
-        </Card>
+        </button>
 
-        <Card className="bg-slate-900 border-slate-800 p-6">
+        <button
+          type="button"
+          aria-pressed={statusFilter === 'warnings'}
+          onClick={() => setFilter('warnings')}
+          className={cardButtonClass(statusFilter === 'warnings')}
+        >
           <div className="flex items-center justify-between mb-2">
             <span className="text-slate-400 text-sm">Warnings</span>
             <div className="w-2 h-2 bg-amber-400 rounded-full animate-pulse" />
           </div>
           <div className="text-3xl font-semibold text-amber-400">{stats.warnings}</div>
           <div className="text-xs text-amber-400 mt-2">High resource usage</div>
-        </Card>
+        </button>
       </div>
 
       <div className="space-y-4">
         {/* Machine Status */}
         <div className="space-y-4">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-xl font-semibold">Machine Status</h2>
+            <div className="flex items-center gap-3">
+              <h2 className="text-xl font-semibold">Machine Status</h2>
+              {statusFilter !== 'all' ? (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs px-2 py-1 rounded border border-slate-700 bg-slate-950 text-slate-300">
+                    Filter: {statusFilter}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="border-slate-700 bg-slate-950 hover:bg-slate-900 text-slate-300"
+                    onClick={() => setFilter('all')}
+                  >
+                    Clear
+                  </Button>
+                </div>
+              ) : null}
+            </div>
             <div className="flex items-center gap-3">
               <span className="text-sm text-slate-400">Last check: 2 mins ago</span>
               <Dialog open={isExportOpen} onOpenChange={setIsExportOpen}>
@@ -661,7 +732,7 @@ export function Dashboard() {
                   </DialogHeader>
                   <div className="py-4 space-y-3">
                     <div className="text-xs text-slate-500">
-                      Rows: <span className="text-slate-300">{machines.length}</span>
+                      Rows: <span className="text-slate-300">{filteredMachines.length}</span>
                     </div>
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                       <Button
@@ -848,14 +919,16 @@ export function Dashboard() {
                   <tr>
                     <td colSpan={999} className="p-8 text-center text-slate-400">Loading...</td>
                   </tr>
-                ) : machines.length === 0 ? (
+                ) : filteredMachines.length === 0 ? (
                   <tr>
                     <td colSpan={999} className="p-8 text-center text-slate-400">
-                      No machines added yet. Click "Add Machine" to get started.
+                      {machines.length === 0
+                        ? 'No machines added yet. Click "Add Machine" to get started.'
+                        : 'No machines match the selected status filter.'}
                     </td>
                   </tr>
                 ) : (
-                  machines.map((machine) => (
+                  filteredMachines.map((machine) => (
                     <tr key={machine.id} className="border-b border-slate-800 hover:bg-slate-800/40">
                       <td className="p-4">
                         <div className="flex items-center gap-2 min-w-0">

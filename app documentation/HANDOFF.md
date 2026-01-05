@@ -29,6 +29,12 @@
 - **Repo cleanup**
   - Removed host `node_modules/` and generated `dist/` folders from workspace
   - `.gitignore` already excludes these
+ - **Dashboard filtering + deep-linking**
+  - Dashboard summary cards are clickable filters (Total/Online/Offline/Warnings) and show a clearable filter badge
+  - Clicking a machine name on Dashboard deep-links into PC Viewer for that machine (`/pc-viewer?machineId=...`)
+  - Fixed a bug where PC Viewer could incorrectly default to the first machine instead of honoring `machineId`
+ - **External Postgres helper scripts (optional)**
+  - `Database build/` contains schema-only setup scripts (including generated `schema.sql`)
 
 ### How to run (Windows)
 ```powershell
@@ -44,6 +50,8 @@ curl -s http://localhost:5000/health
 
 In the UI:
 - Dashboard should show machines and dynamic columns (collected objects)
+- Click **Online/Offline/Warnings** summary cards → the machine table should filter and show “Filter: …” with a Clear button
+- Click a machine name (e.g. **wopr2**) → PC Viewer should open with that same machine selected
 - Data Viewer should show results rows and red highlights for missing file/registry
 
 ### “Where is X implemented?”

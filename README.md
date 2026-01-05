@@ -9,6 +9,8 @@ I built **Smart Console PC Health Monitor** to track the health of Windows PCs a
 ### What I can do in the UI
 
 - **Dashboard**: see each machine in a grid and trigger a full scan.
+  - Click **Total / Online / Offline / Warnings** to filter the machine list
+  - Click a **PC name** to open PC Viewer pre-selected to that machine
 - **Configuration**:
   - Manage machines
   - Manage **Registry Checks** (add/edit/delete)
