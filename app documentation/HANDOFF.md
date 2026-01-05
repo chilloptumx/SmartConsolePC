@@ -43,9 +43,9 @@ docker compose up -d --build
 ```
 
 ### How to verify quickly
-From the backend container:
+From your host machine:
 ```bash
-curl -s http://localhost:5000/health
+curl -s http://localhost:5001/health
 ```
 
 In the UI:

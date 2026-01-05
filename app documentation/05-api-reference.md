@@ -2,7 +2,6 @@
 
 Base URL (default):
 - Host: `http://localhost:5001`
-- In-container (backend calling itself): `http://localhost:5000`
 
 All API routes are under `/api/*`.
 

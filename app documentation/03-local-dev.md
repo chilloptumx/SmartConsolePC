@@ -16,12 +16,14 @@ docker compose up -d --build
 
 ### Ports
 Defaults:
-- Frontend UI: `http://localhost:3001` (container port 3000)
-- Backend API: `http://localhost:5001` (container port 5000)
+- Frontend UI: `http://localhost:3001`
+- Backend API: `http://localhost:5001`
 
 Override with `.env`:
 - `FRONTEND_HOST_PORT`
 - `BACKEND_HOST_PORT`
+
+> Note: Docker still uses internal container ports (Vite on 3000, API on 5000). You normally should only care about the **host ports** above.
 
 ### Common commands
 ```powershell
