@@ -589,6 +589,11 @@ export function AdHocScan() {
   const filteredFile = useMemo(() => filterList(fileChecks, searchFile), [fileChecks, searchFile]);
   const filteredUser = useMemo(() => filterList(userChecks, searchUser), [userChecks, searchUser]);
   const filteredSystem = useMemo(() => filterList(systemChecks, searchSystem), [systemChecks, searchSystem]);
+  const showBuiltPingInSystem = useMemo(() => {
+    const needle = searchSystem.trim().toLowerCase();
+    if (!needle) return true;
+    return 'ping test'.includes(needle) || 'ping'.includes(needle) || 'reachable'.includes(needle);
+  }, [searchSystem]);
 
   const toggleAll = (list: any[], setter: (v: Record<string, boolean>) => void, on: boolean) => {
     const next: Record<string, boolean> = {};
@@ -694,10 +699,6 @@ export function AdHocScan() {
             <div className="rounded border border-slate-800 bg-slate-950 p-4">
               <div className="text-sm font-medium text-slate-200 mb-3">Built-in attributes</div>
               <div className="space-y-2 text-sm">
-                <label className="flex items-center gap-2 text-slate-300">
-                  <Checkbox checked={builtPing} onCheckedChange={(v) => setBuiltPing(Boolean(v))} />
-                  Ping (reachable)
-                </label>
                 <label className="flex items-center gap-2 text-slate-300">
                   <Checkbox checked={builtUserInfo} onCheckedChange={(v) => setBuiltUserInfo(Boolean(v))} />
                   User Information (shows user name)
@@ -883,7 +884,10 @@ export function AdHocScan() {
                     size="sm"
                     variant="outline"
                     className="border-slate-700 bg-slate-950 hover:bg-slate-900"
-                    onClick={() => toggleAll(systemChecks, setSelectedSystem, true)}
+                    onClick={() => {
+                      toggleAll(systemChecks, setSelectedSystem, true);
+                      setBuiltPing(true);
+                    }}
                   >
                     All
                   </Button>
@@ -891,7 +895,10 @@ export function AdHocScan() {
                     size="sm"
                     variant="outline"
                     className="border-slate-700 bg-slate-950 hover:bg-slate-900"
-                    onClick={() => toggleAll(systemChecks, setSelectedSystem, false)}
+                    onClick={() => {
+                      toggleAll(systemChecks, setSelectedSystem, false);
+                      setBuiltPing(false);
+                    }}
                   >
                     None
                   </Button>
@@ -904,8 +911,17 @@ export function AdHocScan() {
                 className="mt-3 bg-slate-950 border-slate-800"
               />
               <div className="mt-3 max-h-48 overflow-auto space-y-2 pr-1">
+                {showBuiltPingInSystem && (
+                  <label className="flex items-start gap-2 text-sm text-slate-300">
+                    <Checkbox checked={builtPing} onCheckedChange={(v) => setBuiltPing(Boolean(v))} />
+                    <span>
+                      <span className="font-mono">Ping Test</span> <span className="text-xs text-slate-500">(PING)</span>
+                    </span>
+                  </label>
+                )}
+
                 {filteredSystem.length === 0 ? (
-                  <div className="text-xs text-slate-500">No system checks configured.</div>
+                  showBuiltPingInSystem ? null : <div className="text-xs text-slate-500">No system checks configured.</div>
                 ) : (
                   filteredSystem.map((c) => (
                     <label key={c.id} className="flex items-start gap-2 text-sm text-slate-300">

@@ -58,7 +58,6 @@ export function Dashboard() {
   const [availableObjects, setAvailableObjects] = useState<CollectedObject[]>([]);
   const [selectedObjectKeys, setSelectedObjectKeys] = useState<Record<string, boolean>>({});
   const [latestByMachineAndObject, setLatestByMachineAndObject] = useState<Record<string, LatestResult | undefined>>({});
-  const [searchPing, setSearchPing] = useState('');
   const [searchRegistry, setSearchRegistry] = useState('');
   const [searchFile, setSearchFile] = useState('');
   const [searchUser, setSearchUser] = useState('');
@@ -371,13 +370,15 @@ export function Dashboard() {
     });
   };
 
-  const pingObjects = useMemo(() => availableObjects.filter((o) => o.checkType === 'PING'), [availableObjects]);
   const registryObjects = useMemo(() => availableObjects.filter((o) => o.checkType === 'REGISTRY_CHECK'), [availableObjects]);
   const fileObjects = useMemo(() => availableObjects.filter((o) => o.checkType === 'FILE_CHECK'), [availableObjects]);
   const userObjects = useMemo(() => availableObjects.filter((o) => o.checkType === 'USER_INFO'), [availableObjects]);
-  const systemObjects = useMemo(() => availableObjects.filter((o) => o.checkType === 'SYSTEM_INFO'), [availableObjects]);
+  // Per user request: group Ping under "System checks" in the options UI.
+  const systemObjects = useMemo(
+    () => availableObjects.filter((o) => o.checkType === 'SYSTEM_INFO' || o.checkType === 'PING'),
+    [availableObjects]
+  );
 
-  const filteredPingObjects = useMemo(() => filterObjects(pingObjects, searchPing), [pingObjects, searchPing]);
   const filteredRegistryObjects = useMemo(() => filterObjects(registryObjects, searchRegistry), [registryObjects, searchRegistry]);
   const filteredFileObjects = useMemo(() => filterObjects(fileObjects, searchFile), [fileObjects, searchFile]);
   const filteredUserObjects = useMemo(() => filterObjects(userObjects, searchUser), [userObjects, searchUser]);
@@ -1038,62 +1039,6 @@ export function Dashboard() {
 
                       <Card className="bg-slate-900 border-slate-800 p-6 lg:col-span-2">
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                          {/* Ping */}
-                          <div className="rounded border border-slate-800 bg-slate-950 p-4">
-                            <div className="flex items-center justify-between gap-2">
-                              <div className="text-sm font-medium text-slate-200">Ping checks</div>
-                              <div className="flex items-center gap-2">
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  className="border-slate-700 bg-slate-950 hover:bg-slate-900"
-                                  onClick={() => toggleAllObjects(pingObjects, true)}
-                                  disabled={pingObjects.length === 0}
-                                >
-                                  All
-                                </Button>
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  className="border-slate-700 bg-slate-950 hover:bg-slate-900"
-                                  onClick={() => toggleAllObjects(pingObjects, false)}
-                                  disabled={pingObjects.length === 0}
-                                >
-                                  None
-                                </Button>
-                              </div>
-                            </div>
-                            <Input
-                              value={searchPing}
-                              onChange={(e) => setSearchPing(e.target.value)}
-                              placeholder="Search ping checks…"
-                              className="mt-3 bg-slate-900 border-slate-800"
-                            />
-                            <div className="mt-3 max-h-56 overflow-auto pr-1 space-y-2">
-                              {pingObjects.length === 0 ? (
-                                <div className="text-sm text-slate-500">No ping objects collected yet.</div>
-                              ) : (
-                                filteredPingObjects.map((o) => {
-                                  const key = makeObjectKey(o.checkType, o.checkName);
-                                  return (
-                                    <label key={key} className="flex items-start gap-3">
-                                      <Checkbox
-                                        checked={!!selectedObjectKeys[key]}
-                                        onCheckedChange={(checked) => setSelectedObjectKeys((prev) => ({ ...prev, [key]: checked as boolean }))}
-                                      />
-                                      <div className="min-w-0">
-                                        <div className="text-slate-300 text-sm truncate" title={`${o.checkType} · ${o.checkName}`}>
-                                          {o.checkName}
-                                        </div>
-                                        <div className="text-slate-500 text-xs font-mono truncate">{o.checkType}</div>
-                                      </div>
-                                    </label>
-                                  );
-                                })
-                              )}
-                            </div>
-                          </div>
-
                           {/* Registry */}
                           <div className="rounded border border-slate-800 bg-slate-950 p-4">
                             <div className="flex items-center justify-between gap-2">
