@@ -26,6 +26,9 @@ Key concepts:
 - “Run all” vs “run one”:
   - Scheduled jobs typically run “all active checks” for that type.
   - AdHoc Scan runs a specific check by ID (e.g., `registryCheckId`, `fileCheckId`).
+- **Manual one-off targets (AdHoc Scan)**:
+  - The AdHoc Scan UI supports a “manual target” mode for running checks against a hostname/IP that is **not** in the Machines list.
+  - Manual targets are **not persisted** (no Machine record is created, and results are not written to `check_results`).
 
 ### Result normalization and evaluation
 The “does it exist?” and expected-value logic is centralized in:

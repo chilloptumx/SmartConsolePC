@@ -2,6 +2,19 @@ import { Router } from 'express';
 import { prisma } from '../services/database.js';
 import { triggerCheck } from '../services/job-scheduler.js';
 import { logAuditEvent } from '../services/audit.js';
+import crypto from 'crypto';
+import {
+  executePowerShell,
+  getCurrentUser,
+  getFileInfo,
+  getLastUser,
+  getRegistryValue,
+  getSystemInfo,
+  pingMachine,
+  type ConnectionOptions,
+  type PowerShellResult,
+} from '../services/powershell-executor.js';
+import { evaluateFileCheckResult, evaluateRegistryCheckResult, parseResultData } from '../services/check-evaluators.js';
 
 const router = Router();
 
@@ -19,6 +32,15 @@ function uniqStrings(arr: any): string[] {
     out.push(s);
   }
   return out;
+}
+
+function normalizeTargetHost(v: any): string {
+  const s = typeof v === 'string' ? v.trim() : '';
+  // Basic safety: keep it small and single-line. We intentionally allow hostnames, IPv4, host.docker.internal, etc.
+  if (!s) return '';
+  if (s.length > 255) return '';
+  if (s.includes('\n') || s.includes('\r') || s.includes('\t')) return '';
+  return s;
 }
 
 // Queue an on-demand scan comprised of specific configured checks.
@@ -128,6 +150,279 @@ router.post('/run', async (req, res) => {
     expected,
     expectedCount: expected.length,
     note: 'Poll /api/data/latest-results with { machineIds, objects, since: startedAt } until all expected objects have results.',
+  });
+});
+
+// Run an on-demand scan directly against a one-off target (hostname/IP) WITHOUT creating a Machine record.
+// Results are returned immediately and are NOT persisted to the DB.
+router.post('/run-direct', async (req, res) => {
+  const body = (req.body ?? {}) as any;
+
+  const targetHost = normalizeTargetHost(body.targetHost);
+  if (!targetHost) return res.status(400).json({ error: 'targetHost is required' });
+
+  const builtIns = (body.builtIns ?? {}) as any;
+  const includePing = Boolean(builtIns.ping);
+  const includeUserInfo = Boolean(builtIns.userInfo);
+  const includeSystemInfo = Boolean(builtIns.systemInfo);
+
+  const registryCheckIds = uniqStrings(body.registryCheckIds);
+  const fileCheckIds = uniqStrings(body.fileCheckIds);
+  const userCheckIds = uniqStrings(body.userCheckIds);
+  const systemCheckIds = uniqStrings(body.systemCheckIds);
+
+  if (registryCheckIds.length > 500) return res.status(400).json({ error: 'registryCheckIds is too large' });
+  if (fileCheckIds.length > 500) return res.status(400).json({ error: 'fileCheckIds is too large' });
+  if (userCheckIds.length > 500) return res.status(400).json({ error: 'userCheckIds is too large' });
+  if (systemCheckIds.length > 500) return res.status(400).json({ error: 'systemCheckIds is too large' });
+
+  const [registryChecks, fileChecks, userChecks, systemChecks] = await Promise.all([
+    registryCheckIds.length
+      ? prisma.registryCheck.findMany({
+          where: { id: { in: registryCheckIds } },
+          select: { id: true, name: true, isActive: true, registryPath: true, valueName: true, expectedValue: true },
+        })
+      : Promise.resolve([]),
+    fileCheckIds.length
+      ? prisma.fileCheck.findMany({
+          where: { id: { in: fileCheckIds } },
+          select: { id: true, name: true, isActive: true, filePath: true, checkExists: true },
+        })
+      : Promise.resolve([]),
+    userCheckIds.length
+      ? prisma.userCheck.findMany({
+          where: { id: { in: userCheckIds } },
+          select: { id: true, name: true, isActive: true, checkType: true, customScript: true },
+        })
+      : Promise.resolve([]),
+    systemCheckIds.length
+      ? prisma.systemCheck.findMany({
+          where: { id: { in: systemCheckIds } },
+          select: { id: true, name: true, isActive: true, checkType: true, customScript: true },
+        })
+      : Promise.resolve([]),
+  ]);
+
+  const startedAt = new Date();
+  const targetId = `manual:${crypto.randomUUID()}`;
+  const expected: ExpectedObject[] = [];
+
+  const connection: ConnectionOptions = {
+    hostname: targetHost,
+    ipAddress: targetHost,
+    useSSH: true,
+  };
+
+  type DirectResult = {
+    id: string;
+    machineId: string;
+    checkType: string;
+    checkName: string;
+    status: string;
+    resultData: any;
+    message?: string | null;
+    duration?: number | null;
+    createdAt: string;
+  };
+
+  const results: DirectResult[] = [];
+  const nowIso = () => new Date().toISOString();
+
+  const pushResult = (r: Omit<DirectResult, 'id'>) => {
+    results.push({ id: crypto.randomUUID(), ...r });
+  };
+
+  // Built-ins
+  if (includePing) expected.push({ machineId: targetId, checkType: 'PING', checkName: 'Ping Test' });
+  if (includeUserInfo) expected.push({ machineId: targetId, checkType: 'USER_INFO', checkName: 'User Information' });
+  if (includeSystemInfo) expected.push({ machineId: targetId, checkType: 'SYSTEM_INFO', checkName: 'System Information' });
+
+  for (const rc of registryChecks) expected.push({ machineId: targetId, checkType: 'REGISTRY_CHECK', checkName: rc.name });
+  for (const fc of fileChecks) expected.push({ machineId: targetId, checkType: 'FILE_CHECK', checkName: fc.name });
+  for (const uc of userChecks) expected.push({ machineId: targetId, checkType: 'USER_INFO', checkName: uc.name });
+  for (const sc of systemChecks) expected.push({ machineId: targetId, checkType: 'SYSTEM_INFO', checkName: sc.name });
+
+  // Execute checks (sequential for predictable WinRM load; these calls are already network-bound)
+  if (includePing) {
+    const ps = await pingMachine(connection);
+    pushResult({
+      machineId: targetId,
+      checkType: 'PING',
+      checkName: 'Ping Test',
+      status: ps.success ? 'SUCCESS' : 'FAILED',
+      resultData: parseResultData(ps.output),
+      message: ps.error ?? null,
+      duration: ps.duration,
+      createdAt: nowIso(),
+    });
+  }
+
+  if (includeUserInfo) {
+    const currentUser = await getCurrentUser(connection);
+    const lastUser = await getLastUser(connection);
+    const userResult: PowerShellResult = {
+      success: currentUser.success && lastUser.success,
+      output: JSON.stringify({ currentUser: currentUser.output, lastUser: lastUser.output }),
+      duration: currentUser.duration + lastUser.duration,
+      error: currentUser.error || lastUser.error,
+    };
+    pushResult({
+      machineId: targetId,
+      checkType: 'USER_INFO',
+      checkName: 'User Information',
+      status: userResult.success ? 'SUCCESS' : 'FAILED',
+      resultData: parseResultData(userResult.output),
+      message: userResult.error ?? null,
+      duration: userResult.duration,
+      createdAt: nowIso(),
+    });
+  }
+
+  if (includeSystemInfo) {
+    const ps = await getSystemInfo(connection);
+    pushResult({
+      machineId: targetId,
+      checkType: 'SYSTEM_INFO',
+      checkName: 'System Information',
+      status: ps.success ? 'SUCCESS' : 'FAILED',
+      resultData: parseResultData(ps.output),
+      message: ps.error ?? null,
+      duration: ps.duration,
+      createdAt: nowIso(),
+    });
+  }
+
+  for (const rc of registryChecks) {
+    const ps = await getRegistryValue(connection, rc.registryPath, rc.valueName ?? undefined);
+    const evaluated = evaluateRegistryCheckResult(
+      { registryPath: rc.registryPath, valueName: rc.valueName, expectedValue: rc.expectedValue },
+      ps
+    );
+    pushResult({
+      machineId: targetId,
+      checkType: 'REGISTRY_CHECK',
+      checkName: rc.name,
+      status: evaluated.status,
+      resultData: evaluated.data,
+      message: evaluated.message ?? null,
+      duration: ps.duration,
+      createdAt: nowIso(),
+    });
+  }
+
+  for (const fc of fileChecks) {
+    const ps = await getFileInfo(connection, fc.filePath);
+    const evaluated = evaluateFileCheckResult({ filePath: fc.filePath, checkExists: fc.checkExists }, ps);
+    pushResult({
+      machineId: targetId,
+      checkType: 'FILE_CHECK',
+      checkName: fc.name,
+      status: evaluated.status,
+      resultData: evaluated.data,
+      message: evaluated.message ?? null,
+      duration: ps.duration,
+      createdAt: nowIso(),
+    });
+  }
+
+  for (const uc of userChecks) {
+    let ps: PowerShellResult;
+    if (uc.checkType === 'CURRENT_AND_LAST') {
+      const currentUser = await getCurrentUser(connection);
+      const lastUser = await getLastUser(connection);
+      ps = {
+        success: currentUser.success && lastUser.success,
+        output: JSON.stringify({ currentUser: currentUser.output, lastUser: lastUser.output }),
+        duration: currentUser.duration + lastUser.duration,
+        error: currentUser.error || lastUser.error,
+      };
+    } else if (uc.checkType === 'CURRENT_ONLY') {
+      const currentUser = await getCurrentUser(connection);
+      ps = {
+        success: currentUser.success,
+        output: JSON.stringify({ currentUser: currentUser.output }),
+        duration: currentUser.duration,
+        error: currentUser.error,
+      };
+    } else if (uc.checkType === 'LAST_ONLY') {
+      const lastUser = await getLastUser(connection);
+      ps = {
+        success: lastUser.success,
+        output: JSON.stringify({ lastUser: lastUser.output }),
+        duration: lastUser.duration,
+        error: lastUser.error,
+      };
+    } else if (uc.checkType === 'CUSTOM' && uc.customScript) {
+      ps = await executePowerShell(uc.customScript, connection);
+    } else {
+      const currentUser = await getCurrentUser(connection);
+      const lastUser = await getLastUser(connection);
+      ps = {
+        success: currentUser.success && lastUser.success,
+        output: JSON.stringify({ currentUser: currentUser.output, lastUser: lastUser.output }),
+        duration: currentUser.duration + lastUser.duration,
+        error: currentUser.error || lastUser.error,
+      };
+    }
+
+    pushResult({
+      machineId: targetId,
+      checkType: 'USER_INFO',
+      checkName: uc.name,
+      status: ps.success ? 'SUCCESS' : 'FAILED',
+      resultData: parseResultData(ps.output),
+      message: ps.error ?? null,
+      duration: ps.duration,
+      createdAt: nowIso(),
+    });
+  }
+
+  for (const sc of systemChecks) {
+    let ps: PowerShellResult;
+    if (sc.checkType === 'SYSTEM_INFO') {
+      ps = await getSystemInfo(connection);
+    } else if (sc.checkType === 'CUSTOM' && sc.customScript) {
+      ps = await executePowerShell(sc.customScript, connection);
+    } else {
+      ps = await getSystemInfo(connection);
+    }
+
+    pushResult({
+      machineId: targetId,
+      checkType: 'SYSTEM_INFO',
+      checkName: sc.name,
+      status: ps.success ? 'SUCCESS' : 'FAILED',
+      resultData: parseResultData(ps.output),
+      message: ps.error ?? null,
+      duration: ps.duration,
+      createdAt: nowIso(),
+    });
+  }
+
+  await logAuditEvent({
+    eventType: 'ADHOC_SCAN_DIRECT',
+    message: `Completed direct ad-hoc scan (${expected.length} checks) for ${targetHost}`,
+    entityType: 'AdHocScan',
+    entityId: startedAt.toISOString(),
+    metadata: {
+      targetHost,
+      targetId,
+      builtIns: { ping: includePing, userInfo: includeUserInfo, systemInfo: includeSystemInfo },
+      selected: { registryCheckIds, fileCheckIds, userCheckIds, systemCheckIds },
+      expectedCount: expected.length,
+      startedAt: startedAt.toISOString(),
+      persisted: false,
+    },
+  });
+
+  return res.json({
+    startedAt: startedAt.toISOString(),
+    targetHost,
+    targetId,
+    expected,
+    expectedCount: expected.length,
+    results,
+    note: 'Direct ad-hoc scan completed. Results are not persisted (manual target is not added to the system).',
   });
 });
 

@@ -59,6 +59,23 @@ Body:
 Response returns a `startedAt` marker and `expected[]` objects. The UI polls latest results using:
 - `POST /api/data/latest-results`
 
+Manual one-off target (not persisted):
+- `POST /api/adhoc-scan/run-direct`
+
+Body:
+```json
+{
+  "targetHost": "hostname-or-ip",
+  "builtIns": { "ping": true, "userInfo": true, "systemInfo": false },
+  "registryCheckIds": ["uuid"],
+  "fileCheckIds": ["uuid"],
+  "userCheckIds": ["uuid"],
+  "systemCheckIds": ["uuid"]
+}
+```
+
+Response returns `results[]` immediately and does **not** create a Machine record or persist results to the database.
+
 ### Data
 - `GET /api/data/results` (filters + pagination)
 - `GET /api/data/results/:id`

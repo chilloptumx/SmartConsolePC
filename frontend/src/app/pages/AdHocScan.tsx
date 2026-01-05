@@ -183,6 +183,9 @@ export function AdHocScan() {
   const [loading, setLoading] = useState(true);
 
   const [selectedMachineId, setSelectedMachineId] = useState<string>('none');
+  const [useManualTarget, setUseManualTarget] = useState(false);
+  const [manualTargetInput, setManualTargetInput] = useState('');
+  const [manualTargetResolved, setManualTargetResolved] = useState<{ id: string; host: string } | null>(null);
 
   // Built-ins
   const [builtPing, setBuiltPing] = useState(true);
@@ -211,6 +214,15 @@ export function AdHocScan() {
   const pollTimer = useRef<number | null>(null);
 
   const selectedMachine = useMemo(() => machines.find((m) => m.id === selectedMachineId), [machines, selectedMachineId]);
+  const activeTarget = useMemo(() => {
+    if (useManualTarget) {
+      const host = manualTargetResolved?.host?.trim() || '';
+      const id = manualTargetResolved?.id?.trim() || '';
+      if (!host || !id) return null;
+      return { id, hostname: host, ipAddress: host, location: { name: 'Manual' } };
+    }
+    return selectedMachine || null;
+  }, [useManualTarget, manualTargetResolved, selectedMachine]);
 
   useEffect(() => {
     const load = async () => {
@@ -324,6 +336,56 @@ export function AdHocScan() {
   };
 
   const runScan = async () => {
+    // Manual target path (direct run; not persisted)
+    if (useManualTarget) {
+      const host = manualTargetInput.trim();
+      if (!host) {
+        toast.error('Enter a target hostname/IP');
+        return;
+      }
+      if (selectedObjectList.length === 0) {
+        toast.error('Select at least one attribute/check');
+        return;
+      }
+
+      try {
+        setRunning(true);
+        setLatestMap({});
+        setExpected([]);
+        setStartedAt(null);
+        if (pollTimer.current) window.clearInterval(pollTimer.current);
+        pollTimer.current = null;
+
+        const payload = {
+          targetHost: host,
+          builtIns: { ping: builtPing, userInfo: builtUserInfo, systemInfo: builtSystemInfo },
+          registryCheckIds: selectedIds(selectedRegistry),
+          fileCheckIds: selectedIds(selectedFile),
+          userCheckIds: selectedIds(selectedUser),
+          systemCheckIds: selectedIds(selectedSystem),
+        };
+
+        const resp = await api.runAdHocScanDirect(payload);
+        setManualTargetResolved({ id: resp.targetId, host: resp.targetHost });
+        setStartedAt(resp.startedAt);
+        setExpected(resp.expected || []);
+
+        const next: Record<string, any> = {};
+        for (const r of resp?.results ?? []) {
+          const k = `${r.machineId}::${makeObjectKey(r.checkType, r.checkName)}`;
+          next[k] = r;
+        }
+        setLatestMap(next);
+
+        toast.success('Ad-hoc scan complete (manual target)');
+      } catch (e: any) {
+        toast.error(e?.message || 'Failed to run scan');
+      } finally {
+        setRunning(false);
+      }
+      return;
+    }
+
     if (selectedMachineId === 'none') {
       toast.error('Select a machine first');
       return;
@@ -365,8 +427,8 @@ export function AdHocScan() {
   };
 
   const exportTable = (format: 'csv' | 'md' | 'html') => {
-    if (!selectedMachine) {
-      toast.error('Select a machine first');
+    if (!activeTarget) {
+      toast.error(useManualTarget ? 'Run a scan first' : 'Select a machine first');
       return;
     }
     if (selectedObjectList.length === 0) {
@@ -374,13 +436,13 @@ export function AdHocScan() {
       return;
     }
 
-    const loc = selectedMachine.location?.name || 'Undefined';
-    const ip = selectedMachine.ipAddress || '';
+    const loc = activeTarget.location?.name || 'Undefined';
+    const ip = activeTarget.ipAddress || '';
 
     // Resolve user name from any USER_INFO object we have for this machine
     let user: string | null = null;
     for (const obj of selectedObjectList.filter((o) => o.checkType === 'USER_INFO')) {
-      const r = latestMap[`${selectedMachine.id}::${makeObjectKey(obj.checkType, obj.checkName)}`];
+      const r = latestMap[`${activeTarget.id}::${makeObjectKey(obj.checkType, obj.checkName)}`];
       const u = extractUserDisplay(r?.resultData);
       if (u) {
         user = u;
@@ -390,12 +452,12 @@ export function AdHocScan() {
 
     const headers = ['Machine', 'Location', 'IP Address', 'User', ...selectedObjectList.map((o) => o.checkName)];
     const row: string[] = [];
-    row.push(`${selectedMachine.hostname} (${loc})`);
+    row.push(`${activeTarget.hostname} (${loc})`);
     row.push(loc);
     row.push(ip);
     row.push(user || '');
     for (const obj of selectedObjectList) {
-      const r = latestMap[`${selectedMachine.id}::${makeObjectKey(obj.checkType, obj.checkName)}`];
+      const r = latestMap[`${activeTarget.id}::${makeObjectKey(obj.checkType, obj.checkName)}`];
       if (!r) {
         row.push('');
         continue;
@@ -411,7 +473,8 @@ export function AdHocScan() {
     }
 
     const ts = new Date().toISOString().replace(/[:]/g, '-').replace(/\..+$/, '');
-    const base = `adhoc-scan-${selectedMachine.hostname}-${ts}`;
+    const safeHost = String(activeTarget.hostname || 'target').replace(/[^\w.-]+/g, '_').slice(0, 80);
+    const base = `adhoc-scan-${safeHost}-${ts}`;
 
     if (format === 'csv') {
       const csv = [headers.map(escapeCsv).join(','), row.map(escapeCsv).join(',')].join('\r\n') + '\r\n';
@@ -508,7 +571,7 @@ export function AdHocScan() {
             variant="outline"
             className="border-slate-700 bg-slate-950 hover:bg-slate-900"
             onClick={() => exportTable('md')}
-            disabled={!selectedMachine || expected.length === 0}
+            disabled={!activeTarget || expected.length === 0}
           >
             Export Markdown
           </Button>
@@ -523,19 +586,56 @@ export function AdHocScan() {
           <div className="space-y-4">
             <div>
               <Label className="text-slate-300 text-sm">Target machine</Label>
-              <Select value={selectedMachineId} onValueChange={setSelectedMachineId} disabled={loading}>
-                <SelectTrigger className="bg-slate-950 border-slate-800">
-                  <SelectValue placeholder="Select a machine…" />
-                </SelectTrigger>
-                <SelectContent className="bg-slate-900 border-slate-800">
-                  <SelectItem value="none">Select…</SelectItem>
-                  {machines.map((m) => (
-                    <SelectItem key={m.id} value={m.id}>
-                      {m.hostname} ({m.location?.name || 'Undefined'})
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <div className="mt-2 flex items-center gap-2">
+                <Checkbox
+                  checked={useManualTarget}
+                  onCheckedChange={(v) => {
+                    const on = Boolean(v);
+                    setUseManualTarget(on);
+                    setLatestMap({});
+                    setExpected([]);
+                    setStartedAt(null);
+                    if (pollTimer.current) window.clearInterval(pollTimer.current);
+                    pollTimer.current = null;
+                    if (!on) {
+                      setManualTargetResolved(null);
+                      setManualTargetInput('');
+                    } else {
+                      setSelectedMachineId('none');
+                    }
+                  }}
+                />
+                <span className="text-sm text-slate-300">Use manual one-off target (not saved)</span>
+              </div>
+
+              {!useManualTarget ? (
+                <Select value={selectedMachineId} onValueChange={setSelectedMachineId} disabled={loading}>
+                  <SelectTrigger className="bg-slate-950 border-slate-800 mt-2">
+                    <SelectValue placeholder="Select a machine…" />
+                  </SelectTrigger>
+                  <SelectContent className="bg-slate-900 border-slate-800">
+                    <SelectItem value="none">Select…</SelectItem>
+                    {machines.map((m) => (
+                      <SelectItem key={m.id} value={m.id}>
+                        {m.hostname} ({m.location?.name || 'Undefined'})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <div className="mt-2 space-y-2">
+                  <Input
+                    value={manualTargetInput}
+                    onChange={(e) => setManualTargetInput(e.target.value)}
+                    placeholder="Hostname or IP (e.g., 192.168.6.4 or host.docker.internal)"
+                    className="bg-slate-950 border-slate-800 font-mono"
+                    disabled={loading || running}
+                  />
+                  <div className="text-xs text-slate-500">
+                    This runs directly against the target and does not add it to Machines or persist results.
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="rounded border border-slate-800 bg-slate-950 p-4">
@@ -794,8 +894,10 @@ export function AdHocScan() {
           </Button>
         </div>
 
-        {!selectedMachine ? (
-          <div className="mt-4 text-sm text-slate-500">Select a machine to view results.</div>
+        {!activeTarget ? (
+          <div className="mt-4 text-sm text-slate-500">
+            {useManualTarget ? 'Enter a manual target and run a scan to view results.' : 'Select a machine to view results.'}
+          </div>
         ) : (
           <div className="mt-4 overflow-x-auto">
             <table className="w-full">
@@ -817,7 +919,7 @@ export function AdHocScan() {
                   </tr>
                 ) : (
                   selectedObjectList.map((o) => {
-                    const r = latestMap[`${selectedMachine.id}::${makeObjectKey(o.checkType, o.checkName)}`];
+                    const r = latestMap[`${activeTarget.id}::${makeObjectKey(o.checkType, o.checkName)}`];
                     const status = (r?.status as CheckStatus | undefined) ?? undefined;
                     const inline = r ? renderResultDataInline(r) : null;
                     const notFound = isNotFoundResult(r);

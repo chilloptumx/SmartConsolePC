@@ -982,11 +982,7 @@ export function Dashboard() {
                           return (
                             <td
                               key={key}
-                              className={`p-4 text-sm ${
-                                notFound
-                                  ? 'bg-red-500/10 text-red-200 ring-2 ring-red-500 ring-inset'
-                                  : 'text-slate-300'
-                              }`}
+                              className="p-4 text-sm text-slate-300"
                             >
                               <div className="max-w-[260px] truncate" title={summary || ''}>
                                 {notFound && summary ? (

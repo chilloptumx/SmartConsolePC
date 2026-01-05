@@ -294,6 +294,28 @@ class ApiClient {
     });
   }
 
+  // Ad-hoc scan (direct, manual target; not persisted)
+  async runAdHocScanDirect(payload: {
+    targetHost: string;
+    builtIns?: { ping?: boolean; userInfo?: boolean; systemInfo?: boolean };
+    registryCheckIds?: string[];
+    fileCheckIds?: string[];
+    userCheckIds?: string[];
+    systemCheckIds?: string[];
+  }) {
+    return this.request<{
+      startedAt: string;
+      targetHost: string;
+      targetId: string;
+      expected: { machineId: string; checkType: string; checkName: string }[];
+      expectedCount: number;
+      results: any[];
+    }>(`/api/adhoc-scan/run-direct`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
   async getResult(id: string) {
     return this.request<any>(`/api/data/results/${id}`);
   }

@@ -9,6 +9,7 @@ Thumbs.db
 desktop.ini
 .vscode/
 .idea/
+*.code-workspace
 
 # --- Logs ---
 *.log
