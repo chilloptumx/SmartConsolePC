@@ -55,6 +55,40 @@ function parseDateInput(v: string) {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
+function summarizeNetworkAdapters(data: any) {
+  const adaptersRaw = (data as any).Adapters ?? (data as any).adapters ?? (data as any).NetworkAdapters ?? (data as any).networkAdapters;
+  const adapters = Array.isArray(adaptersRaw) ? adaptersRaw : null;
+  if (!adapters) return null;
+  if (adapters.length === 0) return 'no adapters';
+
+  const pickIp = (ip: any) => {
+    if (!ip) return null;
+    const s = String(ip);
+    const parts = s
+      .split(',')
+      .map((p) => p.trim())
+      .filter(Boolean);
+    if (parts.length === 0) return null;
+    const v4 = parts.find((p) => /^\d{1,3}(\.\d{1,3}){3}$/.test(p));
+    return v4 ?? parts[0];
+  };
+
+  const items = adapters
+    .map((a: any) => {
+      const desc = String(a?.Description ?? a?.description ?? a?.Name ?? a?.name ?? '').trim();
+      const ip = pickIp(a?.IPAddress ?? a?.ipAddress ?? a?.IP ?? a?.ip);
+      if (!desc && !ip) return null;
+      const label = desc || 'adapter';
+      return ip ? `${label}: ${ip}` : label;
+    })
+    .filter(Boolean) as string[];
+
+  if (items.length === 0) return `${adapters.length} adapters`;
+  const shown = items.slice(0, 2);
+  const more = items.length - shown.length;
+  return more > 0 ? `${shown.join(' · ')} · +${more}` : shown.join(' · ');
+}
+
 function summarizeResult(r?: CheckResult) {
   if (!r) return '';
   if (r.message) return r.message;
@@ -172,6 +206,9 @@ function summarizeResult(r?: CheckResult) {
     }
 
     if (r.checkType === 'SYSTEM_INFO') {
+      const net = summarizeNetworkAdapters(data);
+      if (net) return net;
+
       const computerName = data.ComputerName ?? data.computerName;
       const manufacturer = data.Manufacturer ?? data.manufacturer;
       const model = data.Model ?? data.model;

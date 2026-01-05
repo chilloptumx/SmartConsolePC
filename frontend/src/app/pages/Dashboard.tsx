@@ -173,6 +173,40 @@ export function Dashboard() {
       }
 
       if (r.checkType === 'SYSTEM_INFO') {
+        // Support custom "SYSTEM_INFO" objects like Network Adapter Information (seeded as CUSTOM but stored as SYSTEM_INFO results).
+        const adaptersRaw =
+          (data as any).Adapters ?? (data as any).adapters ?? (data as any).NetworkAdapters ?? (data as any).networkAdapters;
+        if (Array.isArray(adaptersRaw)) {
+          const pickIp = (ip: any) => {
+            if (!ip) return null;
+            const s = String(ip);
+            const parts = s
+              .split(',')
+              .map((p) => p.trim())
+              .filter(Boolean);
+            if (parts.length === 0) return null;
+            const v4 = parts.find((p) => /^\d{1,3}(\.\d{1,3}){3}$/.test(p));
+            return v4 ?? parts[0];
+          };
+
+          if (adaptersRaw.length === 0) return 'no adapters';
+
+          const items = adaptersRaw
+            .map((a: any) => {
+              const desc = String(a?.Description ?? a?.description ?? a?.Name ?? a?.name ?? '').trim();
+              const ip = pickIp(a?.IPAddress ?? a?.ipAddress ?? a?.IP ?? a?.ip);
+              if (!desc && !ip) return null;
+              const label = desc || 'adapter';
+              return ip ? `${label}: ${ip}` : label;
+            })
+            .filter(Boolean) as string[];
+
+          if (items.length === 0) return `${adaptersRaw.length} adapters`;
+          const shown = items.slice(0, 2);
+          const more = items.length - shown.length;
+          return more > 0 ? `${shown.join(' · ')} · +${more}` : shown.join(' · ');
+        }
+
         const computerName = (data as any).ComputerName ?? (data as any).computerName;
         const manufacturer = (data as any).Manufacturer ?? (data as any).manufacturer;
         const model = (data as any).Model ?? (data as any).model;
