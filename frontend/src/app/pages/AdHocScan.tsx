@@ -555,7 +555,7 @@ export function AdHocScan() {
             variant="outline"
             className="border-slate-700 bg-slate-950 hover:bg-slate-900"
             onClick={() => exportTable('csv')}
-            disabled={!selectedMachine || expected.length === 0}
+            disabled={!activeTarget || expected.length === 0}
           >
             Export CSV
           </Button>
@@ -563,7 +563,7 @@ export function AdHocScan() {
             variant="outline"
             className="border-slate-700 bg-slate-950 hover:bg-slate-900"
             onClick={() => exportTable('html')}
-            disabled={!selectedMachine || expected.length === 0}
+            disabled={!activeTarget || expected.length === 0}
           >
             Export HTML
           </Button>
