@@ -741,61 +741,122 @@ export function Configuration() {
             return next;
           });
         }}
-        className="space-y-6"
+        className="space-y-6 lg:space-y-0 lg:flex lg:items-start lg:gap-6"
       >
-        <TabsList className="bg-slate-900 border border-slate-800">
-          <TabsTrigger value="machines" className="data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300">
-            <Server className="w-4 h-4 mr-2" />
-            PC List
-          </TabsTrigger>
-          <TabsTrigger value="registry" className="data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300">
+        <TabsList className="bg-slate-900 border border-slate-800 p-3 rounded-lg flex flex-col items-stretch gap-1 lg:w-72 lg:sticky lg:top-6">
+          <div role="presentation" className="px-2 pt-1 pb-1 text-[11px] uppercase tracking-wider text-slate-500">
+            Collected data (objects)
+          </div>
+          <TabsTrigger
+            value="registry"
+            className="w-full justify-start data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
+          >
             <FolderKey className="w-4 h-4 mr-2" />
             Registry Checks
           </TabsTrigger>
-          <TabsTrigger value="files" className="data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300">
+          <TabsTrigger
+            value="files"
+            className="w-full justify-start data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
+          >
             <FileText className="w-4 h-4 mr-2" />
             File Checks
           </TabsTrigger>
-          <TabsTrigger value="users" className="data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300">
+          <TabsTrigger
+            value="users"
+            className="w-full justify-start data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
+          >
             <User className="w-4 h-4 mr-2" />
             User Checks
           </TabsTrigger>
-          <TabsTrigger value="system" className="data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300">
+          <TabsTrigger
+            value="system"
+            className="w-full justify-start data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
+          >
             <Monitor className="w-4 h-4 mr-2" />
             System Checks
           </TabsTrigger>
-          <TabsTrigger value="ping" className="data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300">
-            <Activity className="w-4 h-4 mr-2" />
-            Ping Configuration
+
+          <div role="presentation" className="mt-3 px-2 pt-2 pb-1 text-[11px] uppercase tracking-wider text-slate-500 border-t border-slate-800">
+            Machines
+          </div>
+          <TabsTrigger
+            value="machines"
+            className="w-full justify-start data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
+          >
+            <Server className="w-4 h-4 mr-2" />
+            PC List
           </TabsTrigger>
-          <TabsTrigger value="email-reports" className="data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300">
-            <Mail className="w-4 h-4 mr-2" />
-            Report Scheduler
-          </TabsTrigger>
-          <TabsTrigger value="job-scheduler" className="data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300">
-            <Clock className="w-4 h-4 mr-2" />
-            Job Scheduler
-          </TabsTrigger>
-          <TabsTrigger value="smtp" className="data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300">
-            <Mail className="w-4 h-4 mr-2" />
-            SMTP Configuration
-          </TabsTrigger>
-          <TabsTrigger value="auth" className="data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300">
-            <KeyRound className="w-4 h-4 mr-2" />
-            Authentication
-          </TabsTrigger>
-          <TabsTrigger value="database" className="data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300">
-            <Database className="w-4 h-4 mr-2" />
-            Database
-          </TabsTrigger>
-          <TabsTrigger value="locations" className="data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300">
+          <TabsTrigger
+            value="locations"
+            className="w-full justify-start data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
+          >
             <MapPin className="w-4 h-4 mr-2" />
             Define Locations
           </TabsTrigger>
+
+          <div role="presentation" className="mt-3 px-2 pt-2 pb-1 text-[11px] uppercase tracking-wider text-slate-500 border-t border-slate-800">
+            Automation (cadence)
+          </div>
+          <TabsTrigger
+            value="job-scheduler"
+            className="w-full justify-start data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
+          >
+            <Clock className="w-4 h-4 mr-2" />
+            Job Scheduler
+          </TabsTrigger>
+          <TabsTrigger
+            value="email-reports"
+            className="w-full justify-start data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
+          >
+            <Mail className="w-4 h-4 mr-2" />
+            Report Scheduler
+          </TabsTrigger>
+          <TabsTrigger
+            value="ping"
+            className="w-full justify-start data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
+          >
+            <Activity className="w-4 h-4 mr-2" />
+            Ping Configuration
+          </TabsTrigger>
+
+          <div role="presentation" className="mt-3 px-2 pt-2 pb-1 text-[11px] uppercase tracking-wider text-slate-500 border-t border-slate-800">
+            Integrations
+          </div>
+          <TabsTrigger
+            value="smtp"
+            className="w-full justify-start data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
+          >
+            <Mail className="w-4 h-4 mr-2" />
+            SMTP
+          </TabsTrigger>
+
+          <div role="presentation" className="mt-3 px-2 pt-2 pb-1 text-[11px] uppercase tracking-wider text-slate-500 border-t border-slate-800">
+            Security
+          </div>
+          <TabsTrigger
+            value="auth"
+            className="w-full justify-start data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
+          >
+            <KeyRound className="w-4 h-4 mr-2" />
+            Authentication
+          </TabsTrigger>
+
+          <div role="presentation" className="mt-3 px-2 pt-2 pb-1 text-[11px] uppercase tracking-wider text-slate-500 border-t border-slate-800">
+            Platform
+          </div>
+          <TabsTrigger
+            value="database"
+            className="w-full justify-start data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
+          >
+            <Database className="w-4 h-4 mr-2" />
+            Database
+          </TabsTrigger>
         </TabsList>
 
-        {/* PC List Tab */}
-        <TabsContent value="machines">
+        <div className="lg:flex-1 space-y-6">
+
+          {/* PC List Tab */}
+          <TabsContent value="machines">
           <div className="space-y-6">
             <Card className="bg-slate-900 border-slate-800 p-6">
               <div className="flex items-center justify-between mb-4">
@@ -969,10 +1030,10 @@ export function Configuration() {
               </div>
             </Card>
           </div>
-        </TabsContent>
+          </TabsContent>
 
         {/* Registry Checks Tab */}
-        <TabsContent value="registry">
+          <TabsContent value="registry">
           <Card className="bg-slate-900 border-slate-800 p-6">
             <div className="flex items-center justify-between mb-4">
               <h3 className="font-semibold text-slate-200">Registry Checks</h3>
@@ -1171,10 +1232,10 @@ export function Configuration() {
               )}
             </div>
           </Card>
-        </TabsContent>
+          </TabsContent>
 
         {/* File Checks Tab */}
-        <TabsContent value="files">
+          <TabsContent value="files">
           <Card className="bg-slate-900 border-slate-800 p-6">
             <div className="flex items-center justify-between mb-4">
               <h3 className="font-semibold text-slate-200">File Checks</h3>
@@ -1394,10 +1455,10 @@ export function Configuration() {
               )}
             </div>
           </Card>
-        </TabsContent>
+          </TabsContent>
 
         {/* User Checks Tab */}
-        <TabsContent value="users">
+          <TabsContent value="users">
           <Card className="bg-slate-900 border-slate-800 p-6">
             <div className="flex items-center justify-between mb-4">
               <h3 className="font-semibold text-slate-200">User Checks</h3>
@@ -1575,10 +1636,10 @@ export function Configuration() {
               </form>
             </DialogContent>
           </Dialog>
-        </TabsContent>
+          </TabsContent>
 
         {/* System Checks Tab */}
-        <TabsContent value="system">
+          <TabsContent value="system">
           <Card className="bg-slate-900 border-slate-800 p-6">
             <div className="flex items-center justify-between mb-4">
               <h3 className="font-semibold text-slate-200">System Checks</h3>
@@ -1752,24 +1813,24 @@ export function Configuration() {
               </form>
             </DialogContent>
           </Dialog>
-        </TabsContent>
+          </TabsContent>
 
         {/* Report Scheduler Tab */}
-        <TabsContent value="email-reports">
+          <TabsContent value="email-reports">
           <Card className="bg-slate-900 border-slate-800 p-6">
             <EmailReports embedded />
           </Card>
-        </TabsContent>
+          </TabsContent>
 
         {/* Job Scheduler Tab */}
-        <TabsContent value="job-scheduler">
+          <TabsContent value="job-scheduler">
           <Card className="bg-slate-900 border-slate-800 p-6">
             <Scheduling embedded />
           </Card>
-        </TabsContent>
+          </TabsContent>
 
         {/* Ping Configuration Tab */}
-        <TabsContent value="ping">
+          <TabsContent value="ping">
           <Card className="bg-slate-900 border-slate-800 p-6">
               <div className="flex items-start justify-between gap-4">
                 <div>
@@ -1829,10 +1890,10 @@ export function Configuration() {
                 </Button>
               </div>
           </Card>
-        </TabsContent>
+          </TabsContent>
 
         {/* SMTP Configuration Tab */}
-        <TabsContent value="smtp">
+          <TabsContent value="smtp">
           <Card className="bg-slate-900 border-slate-800 p-6">
             <div className="flex items-start justify-between gap-4">
               <div>
@@ -1908,10 +1969,10 @@ export function Configuration() {
               </Button>
             </div>
           </Card>
-        </TabsContent>
+          </TabsContent>
 
         {/* Authentication Tab */}
-        <TabsContent value="auth">
+          <TabsContent value="auth">
           <Card className="bg-slate-900 border-slate-800 p-6">
             <div className="flex items-start justify-between gap-4">
               <div>
@@ -2091,10 +2152,10 @@ export function Configuration() {
               </div>
             </div>
           </Card>
-        </TabsContent>
+          </TabsContent>
 
         {/* Database Tab */}
-        <TabsContent value="database">
+          <TabsContent value="database">
           <Card className="bg-slate-900 border-slate-800 p-6">
             <div className="flex items-start justify-between gap-4">
               <div>
@@ -2316,10 +2377,10 @@ export function Configuration() {
               </div>
             </div>
           </Card>
-        </TabsContent>
+          </TabsContent>
 
         {/* Define Locations Tab */}
-        <TabsContent value="locations">
+          <TabsContent value="locations">
           <Card className="bg-slate-900 border-slate-800 p-6">
             <div className="flex items-center justify-between mb-4">
               <div>
@@ -2479,7 +2540,8 @@ export function Configuration() {
               </div>
             </div>
           </Card>
-        </TabsContent>
+          </TabsContent>
+        </div>
       </Tabs>
     </div>
   );
