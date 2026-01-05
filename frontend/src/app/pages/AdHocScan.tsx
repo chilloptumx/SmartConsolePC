@@ -131,6 +131,29 @@ function renderResultDataInline(result: any, maxLen = 220): { text: string; trun
       const d = new Date(lastBootTime);
       parts.push(`boot=${Number.isNaN(d.getTime()) ? lastBootTime : d.toLocaleDateString()}`);
     }
+    // CPU Information
+    const cpuMaxMHz = Number((data as any).MaxClockSpeed ?? (data as any).maxClockSpeed);
+    const cpuCurMHz = Number((data as any).CurrentClockSpeed ?? (data as any).currentClockSpeed);
+    const cpuLoad = Number((data as any).LoadPercentage ?? (data as any).loadPercentage);
+    if (Number.isFinite(cpuMaxMHz) || Number.isFinite(cpuCurMHz)) {
+      const mhzToGhz = (mhz: number) => `${Number((mhz / 1000).toFixed(2))}GHz`;
+      if (Number.isFinite(cpuCurMHz)) parts.push(`cpuCur=${mhzToGhz(cpuCurMHz)}`);
+      if (Number.isFinite(cpuMaxMHz)) parts.push(`cpuMax=${mhzToGhz(cpuMaxMHz)}`);
+      if (Number.isFinite(cpuLoad)) parts.push(`cpuLoad=${Math.round(cpuLoad)}%`);
+    }
+
+    // Disk Space Check
+    const drive = (data as any).Drive ?? (data as any).drive;
+    const freeGB = Number((data as any).FreeSpaceGB ?? (data as any).freeSpaceGB);
+    const percentFree = Number((data as any).PercentFree ?? (data as any).percentFree);
+    if (drive || Number.isFinite(freeGB) || Number.isFinite(percentFree)) {
+      const d = drive ? String(drive) : 'disk';
+      const sub: string[] = [];
+      if (Number.isFinite(freeGB)) sub.push(`${Number(freeGB.toFixed(2))}GB`);
+      if (Number.isFinite(percentFree)) sub.push(`${Number(percentFree.toFixed(1))}%`);
+      if (sub.length) parts.push(`${d}Free=${sub.join(' ')}`);
+    }
+
     if (parts.length > 0) {
       const out = parts.join(' · ');
       const truncated = out.length > maxLen;

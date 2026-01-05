@@ -194,6 +194,36 @@ export function Dashboard() {
       }
 
       if (r.checkType === 'SYSTEM_INFO') {
+        // CPU Information (seeded as a custom System Check but stored as SYSTEM_INFO results)
+        const cpuMaxMHz = Number((data as any).MaxClockSpeed ?? (data as any).maxClockSpeed);
+        const cpuCurMHz = Number((data as any).CurrentClockSpeed ?? (data as any).currentClockSpeed);
+        const cpuLoad = Number((data as any).LoadPercentage ?? (data as any).loadPercentage);
+        const cpuCores = (data as any).NumberOfCores ?? (data as any).numberOfCores;
+        const cpuLogical = (data as any).NumberOfLogicalProcessors ?? (data as any).numberOfLogicalProcessors;
+        if (Number.isFinite(cpuMaxMHz) || Number.isFinite(cpuCurMHz) || Number.isFinite(cpuLoad) || cpuCores !== undefined) {
+          const mhzToGhz = (mhz: number) => `${Number((mhz / 1000).toFixed(2))}GHz`;
+          const parts: string[] = [];
+          if (Number.isFinite(cpuCurMHz)) parts.push(`cur ${mhzToGhz(cpuCurMHz)}`);
+          if (Number.isFinite(cpuMaxMHz)) parts.push(`max ${mhzToGhz(cpuMaxMHz)}`);
+          if (Number.isFinite(cpuLoad)) parts.push(`load ${Math.round(cpuLoad)}%`);
+          if (cpuCores !== undefined || cpuLogical !== undefined) parts.push(`${cpuCores ?? '?'}c/${cpuLogical ?? '?'}t`);
+          return parts.length ? parts.join(' · ') : 'cpu';
+        }
+
+        // Disk Space Check (C: Drive) (seeded as a custom System Check but stored as SYSTEM_INFO results)
+        const drive = (data as any).Drive ?? (data as any).drive;
+        const freeGB = Number((data as any).FreeSpaceGB ?? (data as any).freeSpaceGB);
+        const totalGB = Number((data as any).TotalSpaceGB ?? (data as any).totalSpaceGB);
+        const percentFree = Number((data as any).PercentFree ?? (data as any).percentFree);
+        if (drive || Number.isFinite(freeGB) || Number.isFinite(totalGB) || Number.isFinite(percentFree)) {
+          const d = drive ? String(drive) : 'disk';
+          const free = Number.isFinite(freeGB) ? `${Number(freeGB.toFixed(2))}GB free` : '';
+          const pct = Number.isFinite(percentFree) ? `(${Number(percentFree.toFixed(1))}%)` : '';
+          const total = Number.isFinite(totalGB) ? `of ${Number(totalGB.toFixed(2))}GB` : '';
+          const prefix = d.endsWith(':') ? d : `${d}:`;
+          return [prefix, free, pct, total].filter(Boolean).join(' ');
+        }
+
         // Support custom "SYSTEM_INFO" objects like Network Adapter Information (seeded as CUSTOM but stored as SYSTEM_INFO results).
         const adaptersRaw =
           (data as any).Adapters ?? (data as any).adapters ?? (data as any).NetworkAdapters ?? (data as any).networkAdapters;
