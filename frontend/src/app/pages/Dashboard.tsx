@@ -194,6 +194,22 @@ export function Dashboard() {
       }
 
       if (r.checkType === 'SYSTEM_INFO') {
+        // Local Administrators Members (stored as SYSTEM_INFO)
+        const adminsGroup = (data as any).Group ?? (data as any).group;
+        const adminsMembersRaw = (data as any).Members ?? (data as any).members;
+        const adminsMembers = Array.isArray(adminsMembersRaw) ? adminsMembersRaw : null;
+        if (adminsMembers) {
+          const names = adminsMembers
+            .map((m: any) => String(m?.Name ?? m?.name ?? '').trim())
+            .filter(Boolean);
+          const shown = names.slice(0, 3);
+          const more = names.length - shown.length;
+          const label = shown.join(', ');
+          const head = `${names.length} members`;
+          const groupLabel = adminsGroup ? ` (${adminsGroup})` : '';
+          return `${head}${groupLabel}${label ? `: ${label}${more > 0 ? ` +${more}` : ''}` : ''}`;
+        }
+
         // CPU Information (seeded as a custom System Check but stored as SYSTEM_INFO results)
         const cpuMaxMHz = Number((data as any).MaxClockSpeed ?? (data as any).maxClockSpeed);
         const cpuCurMHz = Number((data as any).CurrentClockSpeed ?? (data as any).currentClockSpeed);

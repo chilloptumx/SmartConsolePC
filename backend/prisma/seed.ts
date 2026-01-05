@@ -235,6 +235,69 @@ foreach ($adapter in $adapters) {
     console.log(`Skipping system checks seed (${existingSystemChecks} already exist)`);
   }
 
+  // Ensure newer system checks are present even if the DB was already seeded previously.
+  // (The backend runs prisma:seed on startup, so this keeps old environments up to date.)
+  {
+    const name = 'Local Administrators Members';
+    const existing = await prisma.systemCheck.findFirst({ where: { name } });
+    if (!existing) {
+      const localAdminsScript = `# Enumerate local Administrators group members (users + groups, including domain principals)
+$group = 'Administrators'
+$members = @()
+$errors = @()
+
+try {
+  $members = Get-LocalGroupMember -Group $group -ErrorAction Stop | ForEach-Object {
+    $sid = $null
+    try { $sid = $_.SID.Value } catch { }
+    @{
+      Name = $_.Name
+      ObjectClass = $_.ObjectClass
+      PrincipalSource = $_.PrincipalSource
+      SID = $sid
+    }
+  }
+} catch {
+  $errors += $_.Exception.Message
+
+  # Fallback for environments where Get-LocalGroupMember isn't available
+  $raw = (net localgroup $group 2>&1) | ForEach-Object { "$_" }
+  $start = ($raw | Select-String -Pattern '----' -SimpleMatch | Select-Object -First 1).LineNumber
+  $end = ($raw | Select-String -Pattern 'The command completed successfully' -SimpleMatch | Select-Object -First 1).LineNumber
+  if ($start) {
+    $from = [Math]::Min($raw.Length, $start + 1)
+    $to = if ($end) { [Math]::Max(1, $end - 1) } else { $raw.Length }
+    $names = @()
+    for ($i = $from; $i -le $to; $i++) {
+      $line = $raw[$i - 1].Trim()
+      if ($line -and ($line -notmatch '^-{3,}$')) { $names += $line }
+    }
+    $members = $names | ForEach-Object { @{ Name = $_; ObjectClass = 'Unknown'; PrincipalSource = 'net' } }
+  }
+}
+
+$members = $members | Sort-Object -Property ObjectClass, Name
+@{
+  Group = $group
+  Count = ($members | Measure-Object).Count
+  Members = $members
+  Errors = $errors
+} | ConvertTo-Json -Depth 6`;
+
+      await prisma.systemCheck.create({
+        data: {
+          name,
+          checkType: 'CUSTOM',
+          description:
+            'Enumerates all members of the local Administrators group (includes nested security groups and individual users when available).',
+          customScript: localAdminsScript,
+          isActive: false,
+        },
+      });
+      console.log(`✓ Added system check: ${name}`);
+    }
+  }
+
   // Add example custom user check
   const existingUserCheckCount = await prisma.userCheck.count();
   if (existingUserCheckCount === 3) {

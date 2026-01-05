@@ -131,6 +131,20 @@ function renderResultDataInline(result: any, maxLen = 220): { text: string; trun
       const d = new Date(lastBootTime);
       parts.push(`boot=${Number.isNaN(d.getTime()) ? lastBootTime : d.toLocaleDateString()}`);
     }
+    // Local Administrators Members
+    const adminsMembersRaw = (data as any).Members ?? (data as any).members;
+    if (Array.isArray(adminsMembersRaw)) {
+      const names = adminsMembersRaw
+        .map((m: any) => String(m?.Name ?? m?.name ?? '').trim())
+        .filter(Boolean);
+      if (names.length) {
+        const shown = names.slice(0, 3);
+        const more = names.length - shown.length;
+        parts.push(`admins=${shown.join(', ')}${more > 0 ? ` +${more}` : ''}`);
+      } else {
+        parts.push('admins=0');
+      }
+    }
     // CPU Information
     const cpuMaxMHz = Number((data as any).MaxClockSpeed ?? (data as any).maxClockSpeed);
     const cpuCurMHz = Number((data as any).CurrentClockSpeed ?? (data as any).currentClockSpeed);
