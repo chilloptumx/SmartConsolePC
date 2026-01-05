@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { api } from '../services/api';
+import { loadRebootThresholds, parseUptimeInfo, getUptimeSeverity } from '../utils/reboot';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Checkbox } from '../components/ui/checkbox';
@@ -122,6 +123,20 @@ function safeInlineValue(v: any) {
 
 function renderResultDataInline(result: any, maxLen = 220): { text: string; truncated: boolean } {
   const data = result?.resultData;
+  if (result?.checkType === 'SYSTEM_INFO' && data && typeof data === 'object' && !Array.isArray(data)) {
+    const { uptimeDays, lastBootTime } = parseUptimeInfo(data);
+    const parts: string[] = [];
+    if (uptimeDays !== null) parts.push(`uptime=${Number(uptimeDays.toFixed(2))}d`);
+    if (lastBootTime) {
+      const d = new Date(lastBootTime);
+      parts.push(`boot=${Number.isNaN(d.getTime()) ? lastBootTime : d.toLocaleDateString()}`);
+    }
+    if (parts.length > 0) {
+      const out = parts.join(' · ');
+      const truncated = out.length > maxLen;
+      return { text: truncated ? `${out.slice(0, maxLen)}…` : out, truncated };
+    }
+  }
   if (result?.checkType === 'USER_INFO') {
     const u = extractUserDisplay(data);
     const t = u ? `user=${u}` : safeInlineValue(data);
@@ -212,6 +227,7 @@ export function AdHocScan() {
     result: any;
   } | null>(null);
   const pollTimer = useRef<number | null>(null);
+  const rebootThresholds = useMemo(() => loadRebootThresholds(), []);
 
   const selectedMachine = useMemo(() => machines.find((m) => m.id === selectedMachineId), [machines, selectedMachineId]);
   const activeTarget = useMemo(() => {
@@ -923,6 +939,16 @@ export function AdHocScan() {
                     const status = (r?.status as CheckStatus | undefined) ?? undefined;
                     const inline = r ? renderResultDataInline(r) : null;
                     const notFound = isNotFoundResult(r);
+                    const uptimeSev =
+                      r?.checkType === 'SYSTEM_INFO'
+                        ? getUptimeSeverity(parseUptimeInfo(r?.resultData).uptimeDays, rebootThresholds)
+                        : null;
+                    const uptimeClass =
+                      uptimeSev === 'critical'
+                        ? 'bg-red-500/10 text-red-200 ring-2 ring-red-500 ring-inset'
+                        : uptimeSev === 'warning'
+                          ? 'bg-amber-500/10 text-amber-200 ring-2 ring-amber-500 ring-inset'
+                          : '';
                     return (
                       <tr key={makeObjectKey(o.checkType, o.checkName)} className="border-b border-slate-800 hover:bg-slate-800/40">
                         <td className="p-3 text-sm text-slate-200">
@@ -934,7 +960,9 @@ export function AdHocScan() {
                         </td>
                         <td
                           className={`p-3 text-sm ${
-                            notFound ? 'bg-red-500/10 text-red-200 ring-2 ring-red-500 ring-inset' : 'text-slate-300'
+                            notFound
+                              ? 'bg-red-500/10 text-red-200 ring-2 ring-red-500 ring-inset'
+                              : uptimeClass || 'text-slate-300'
                           }`}
                         >
                           {r ? (

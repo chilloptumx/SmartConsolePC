@@ -10,6 +10,15 @@ import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Checkbox } from '../components/ui/checkbox';
 import { api } from '../services/api';
+import {
+  loadRebootThresholds,
+  saveRebootThresholds,
+  normalizeRebootThresholds,
+  parseUptimeInfo,
+  getUptimeSeverity,
+  formatLastBootTimeForDisplay,
+  type RebootThresholds,
+} from '../utils/reboot';
 
 export function Dashboard() {
   const [isAddMachineOpen, setIsAddMachineOpen] = useState(false);
@@ -26,7 +35,10 @@ export function Dashboard() {
     ipAddress: true,
     lastSeen: true,
     pcModel: true,
+    uptime: false,
+    lastReboot: false,
   });
+  const [rebootThresholds, setRebootThresholds] = useState<RebootThresholds>(() => loadRebootThresholds());
 
   type CollectedObject = { checkType: string; checkName: string; total?: number; firstSeen?: string; lastSeen?: string };
   type LatestResult = {
@@ -42,6 +54,7 @@ export function Dashboard() {
   };
 
   const makeObjectKey = (checkType: string, checkName: string) => `${checkType}::${checkName}`;
+  const systemInfoKey = makeObjectKey('SYSTEM_INFO', 'System Information');
   const [availableObjects, setAvailableObjects] = useState<CollectedObject[]>([]);
   const [selectedObjectKeys, setSelectedObjectKeys] = useState<Record<string, boolean>>({});
   const [latestByMachineAndObject, setLatestByMachineAndObject] = useState<Record<string, LatestResult | undefined>>({});
@@ -64,6 +77,9 @@ export function Dashboard() {
           }
           if (parsed.selectedObjectKeys && typeof parsed.selectedObjectKeys === 'object') {
             setSelectedObjectKeys(parsed.selectedObjectKeys);
+          }
+          if (parsed.rebootThresholds && typeof parsed.rebootThresholds === 'object') {
+            setRebootThresholds(normalizeRebootThresholds(parsed.rebootThresholds));
           }
         }
       }
@@ -219,6 +235,7 @@ export function Dashboard() {
         const osVersion = (data as any).OSVersion ?? (data as any).osVersion ?? (data as any).OSCaption ?? (data as any).OS;
         const osArch = (data as any).OSArchitecture ?? (data as any).osArchitecture;
         const uptimeDays = (data as any).UptimeDays ?? (data as any).uptimeDays;
+        const lastBootTime = (data as any).LastBootTime ?? (data as any).lastBootTime;
 
         const parts: string[] = [];
         if (computerName) parts.push(String(computerName));
@@ -230,6 +247,7 @@ export function Dashboard() {
         if (osVersion) parts.push(String(osVersion));
         if (osArch) parts.push(String(osArch));
         if (uptimeDays !== undefined) parts.push(`uptime ${uptimeDays}d`);
+        if (lastBootTime) parts.push(`boot ${shortDate(lastBootTime)}`);
 
         return parts.length > 0 ? parts.join(' · ') : 'system info';
       }
@@ -396,6 +414,8 @@ export function Dashboard() {
     if (displayColumns.ipAddress) headers.push('IP Address');
     if (displayColumns.lastSeen) headers.push('Last Seen');
     if (displayColumns.pcModel) headers.push('Model');
+    if (displayColumns.uptime) headers.push('Uptime');
+    if (displayColumns.lastReboot) headers.push('Last reboot');
     for (const key of objectKeys) {
       const [, checkName] = key.split('::');
       headers.push(checkName || key);
@@ -409,6 +429,14 @@ export function Dashboard() {
       if (displayColumns.ipAddress) row.push(machine.ipAddress || '');
       if (displayColumns.lastSeen) row.push(machine.lastSeen ? new Date(machine.lastSeen).toLocaleString() : '');
       if (displayColumns.pcModel) row.push(machine.pcModel || '');
+      if (displayColumns.uptime || displayColumns.lastReboot) {
+        const sys = latestByMachineAndObject[`${machine.id}::${systemInfoKey}`];
+        const { uptimeDays, lastBootTime } = parseUptimeInfo(sys?.resultData);
+        const uptimeLabel = uptimeDays === null ? '' : `${Number(uptimeDays.toFixed(2))}d`;
+        const bootLabel = formatLastBootTimeForDisplay(lastBootTime) ?? '';
+        if (displayColumns.uptime) row.push(uptimeLabel);
+        if (displayColumns.lastReboot) row.push(bootLabel);
+      }
       for (const key of objectKeys) {
         const r = latestByMachineAndObject[`${machine.id}::${key}`];
         const summary = summarizeLatest(r);
@@ -566,9 +594,15 @@ export function Dashboard() {
 
   useEffect(() => {
     // Keep dashboard dynamic columns in sync with what is visible in the table.
-    refreshLatestObjectColumns(filteredMachines, selectedObjectKeys);
+    // If uptime/last reboot columns are enabled, also fetch the latest "System Information" object
+    // (even if not selected as a dynamic column) so we can derive the values.
+    const fetchKeys =
+      displayColumns.uptime || displayColumns.lastReboot
+        ? { ...selectedObjectKeys, [systemInfoKey]: true }
+        : selectedObjectKeys;
+    refreshLatestObjectColumns(filteredMachines, fetchKeys);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filteredMachines, selectedObjectKeys]);
+  }, [filteredMachines, selectedObjectKeys, displayColumns.uptime, displayColumns.lastReboot]);
 
   const stats = {
     total: machines.length,
@@ -888,6 +922,62 @@ export function Dashboard() {
                                 />
                                 Model
                               </label>
+                              <label className="flex items-center gap-2 text-slate-300">
+                                <Checkbox
+                                  checked={displayColumns.uptime}
+                                  onCheckedChange={(checked) => setDisplayColumns((prev) => ({ ...prev, uptime: checked as boolean }))}
+                                />
+                                Uptime (days)
+                              </label>
+                              <label className="flex items-center gap-2 text-slate-300">
+                                <Checkbox
+                                  checked={displayColumns.lastReboot}
+                                  onCheckedChange={(checked) => setDisplayColumns((prev) => ({ ...prev, lastReboot: checked as boolean }))}
+                                />
+                                Last reboot
+                              </label>
+                            </div>
+                          </div>
+
+                          <div className="rounded border border-slate-800 bg-slate-950 p-4">
+                            <div className="text-sm font-medium text-slate-200 mb-1">Reboot freshness thresholds</div>
+                            <div className="text-xs text-slate-500 mb-3">
+                              Machines with uptime above these thresholds will be highlighted (yellow/red).
+                            </div>
+                            <div className="grid grid-cols-2 gap-3">
+                              <div>
+                                <Label className="text-slate-300 text-xs">Warning (days)</Label>
+                                <Input
+                                  type="number"
+                                  min={0}
+                                  step={1}
+                                  value={rebootThresholds.warnDays}
+                                  onChange={(e) =>
+                                    setRebootThresholds((prev) =>
+                                      normalizeRebootThresholds({ ...prev, warnDays: Number(e.target.value) })
+                                    )
+                                  }
+                                  className="mt-1 bg-slate-900 border-slate-800"
+                                />
+                              </div>
+                              <div>
+                                <Label className="text-slate-300 text-xs">Critical (days)</Label>
+                                <Input
+                                  type="number"
+                                  min={0}
+                                  step={1}
+                                  value={rebootThresholds.criticalDays}
+                                  onChange={(e) =>
+                                    setRebootThresholds((prev) =>
+                                      normalizeRebootThresholds({ ...prev, criticalDays: Number(e.target.value) })
+                                    )
+                                  }
+                                  className="mt-1 bg-slate-900 border-slate-800"
+                                />
+                              </div>
+                            </div>
+                            <div className="mt-3 text-xs text-slate-500">
+                              Tip: set Warning=0 and Critical=0 to effectively disable highlighting.
                             </div>
                           </div>
 
@@ -1191,11 +1281,12 @@ export function Dashboard() {
                         try {
                           localStorage.setItem(
                             'dashboard.machineTableColumns',
-                            JSON.stringify({ displayColumns, selectedObjectKeys })
+                            JSON.stringify({ displayColumns, selectedObjectKeys, rebootThresholds })
                           );
                         } catch {
                           // ignore
                         }
+                        saveRebootThresholds(rebootThresholds);
                         setIsCardConfigOpen(false);
                         toast.success('Display settings saved');
                       }} 
@@ -1223,6 +1314,12 @@ export function Dashboard() {
                   )}
                   {displayColumns.pcModel && (
                     <th className="text-left p-4 text-sm font-medium text-slate-400">Model</th>
+                  )}
+                  {displayColumns.uptime && (
+                    <th className="text-left p-4 text-sm font-medium text-slate-400">Uptime</th>
+                  )}
+                  {displayColumns.lastReboot && (
+                    <th className="text-left p-4 text-sm font-medium text-slate-400">Last reboot</th>
                   )}
                   {Object.entries(selectedObjectKeys)
                     .filter(([, v]) => v)
@@ -1293,6 +1390,62 @@ export function Dashboard() {
                           {machine.pcModel || '-'}
                         </td>
                       )}
+                      {displayColumns.uptime || displayColumns.lastReboot ? (() => {
+                        const sys = latestByMachineAndObject[`${machine.id}::${systemInfoKey}`];
+                        const { uptimeDays, lastBootTime } = parseUptimeInfo(sys?.resultData);
+                        const sev = getUptimeSeverity(uptimeDays, rebootThresholds);
+                        const badge =
+                          sev === 'critical'
+                            ? 'bg-red-500/10 text-red-200'
+                            : sev === 'warning'
+                              ? 'bg-amber-500/10 text-amber-200'
+                              : '';
+                        const ring =
+                          sev === 'critical'
+                            ? 'inset 0 0 0 2px rgb(239 68 68)'
+                            : sev === 'warning'
+                              ? 'inset 0 0 0 2px rgb(245 158 11)'
+                              : '';
+
+                        const uptimeLabel =
+                          uptimeDays === null ? null : `${Number(uptimeDays.toFixed(2))}d`;
+                        const bootLabel = formatLastBootTimeForDisplay(lastBootTime);
+
+                        return (
+                          <>
+                            {displayColumns.uptime ? (
+                              <td className="p-4 text-sm text-slate-300">
+                                {uptimeLabel ? (
+                                  <span
+                                    className={`inline-block px-2 py-1 ${badge}`}
+                                    style={ring ? { boxShadow: ring } : undefined}
+                                    title={bootLabel ? `Last reboot: ${bootLabel}` : 'Last reboot: unknown'}
+                                  >
+                                    {uptimeLabel}
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-500">-</span>
+                                )}
+                              </td>
+                            ) : null}
+                            {displayColumns.lastReboot ? (
+                              <td className="p-4 text-sm text-slate-300">
+                                {bootLabel ? (
+                                  <span
+                                    className={`inline-block max-w-full truncate px-2 py-1 ${badge}`}
+                                    style={ring ? { boxShadow: ring } : undefined}
+                                    title={uptimeLabel ? `Uptime: ${uptimeLabel}` : 'Uptime: unknown'}
+                                  >
+                                    {bootLabel}
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-500">-</span>
+                                )}
+                              </td>
+                            ) : null}
+                          </>
+                        );
+                      })() : null}
                       {Object.entries(selectedObjectKeys)
                         .filter(([, v]) => v)
                         .map(([key]) => {
@@ -1303,6 +1456,24 @@ export function Dashboard() {
                             ((r?.checkType === 'REGISTRY_CHECK' || r?.checkType === 'FILE_CHECK') &&
                               typeof summary === 'string' &&
                               summary.toLowerCase().includes('not found'));
+                          const uptimeInfo =
+                            r?.checkType === 'SYSTEM_INFO' ? parseUptimeInfo(r?.resultData) : { uptimeDays: null, lastBootTime: null };
+                          const uptimeSev =
+                            r?.checkType === 'SYSTEM_INFO'
+                              ? getUptimeSeverity(uptimeInfo.uptimeDays, rebootThresholds)
+                              : null;
+                          const uptimeBadge =
+                            uptimeSev === 'critical'
+                              ? 'bg-red-500/10 text-red-200'
+                              : uptimeSev === 'warning'
+                                ? 'bg-amber-500/10 text-amber-200'
+                                : '';
+                          const uptimeRing =
+                            uptimeSev === 'critical'
+                              ? 'inset 0 0 0 2px rgb(239 68 68)'
+                              : uptimeSev === 'warning'
+                                ? 'inset 0 0 0 2px rgb(245 158 11)'
+                                : '';
                           return (
                             <td
                               key={key}
@@ -1313,6 +1484,13 @@ export function Dashboard() {
                                   <span
                                     className="inline-block max-w-full truncate px-2 py-1 rounded-none bg-red-500/10 text-red-200"
                                     style={{ boxShadow: 'inset 0 0 0 2px rgb(239 68 68)' }}
+                                  >
+                                    {summary}
+                                  </span>
+                                ) : uptimeBadge && summary ? (
+                                  <span
+                                    className={`inline-block max-w-full truncate px-2 py-1 ${uptimeBadge}`}
+                                    style={uptimeRing ? { boxShadow: uptimeRing } : undefined}
                                   >
                                     {summary}
                                   </span>

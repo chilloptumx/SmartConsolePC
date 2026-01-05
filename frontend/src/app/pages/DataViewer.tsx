@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Search, Download, Filter, Eye } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Card } from '../components/ui/card';
@@ -9,6 +9,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../components/
 import { StatusBadge } from '../components/StatusBadge';
 import { toast } from 'sonner';
 import { api } from '../services/api';
+import { loadRebootThresholds, parseUptimeInfo, getUptimeSeverity } from '../utils/reboot';
 
 export function DataViewer() {
   const [checkResults, setCheckResults] = useState<any[]>([]);
@@ -17,6 +18,7 @@ export function DataViewer() {
   const [users, setUsers] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedResult, setSelectedResult] = useState<any>(null);
+  const rebootThresholds = useMemo(() => loadRebootThresholds(), []);
 
   // Pagination (server-side)
   const [page, setPage] = useState<number>(1);
@@ -298,6 +300,8 @@ export function DataViewer() {
       }
 
       if (result.checkType === 'SYSTEM_INFO') {
+        const { uptimeDays, lastBootTime } = parseUptimeInfo(data);
+
         // Support custom system objects like Network Adapter Information (seeded as CUSTOM but stored as SYSTEM_INFO results).
         const adaptersRaw =
           (data as any).Adapters ?? (data as any).adapters ?? (data as any).NetworkAdapters ?? (data as any).networkAdapters;
@@ -338,7 +342,8 @@ export function DataViewer() {
         const totalMemoryGB = data.TotalMemoryGB ?? data.totalMemoryGB;
         const osVersion = data.OSVersion ?? data.osVersion;
         const osArch = data.OSArchitecture ?? data.osArchitecture;
-        const uptimeDays = data.UptimeDays ?? data.uptimeDays;
+        const uptimeDaysLegacy = data.UptimeDays ?? data.uptimeDays;
+        const lastBootTimeLegacy = (data as any).LastBootTime ?? (data as any).lastBootTime;
         
         const parts: string[] = [];
         if (computerName) parts.push(`${computerName}`);
@@ -349,7 +354,13 @@ export function DataViewer() {
         if (totalMemoryGB !== undefined) parts.push(`${totalMemoryGB}GB RAM`);
         if (osVersion) parts.push(`${osVersion}`);
         if (osArch) parts.push(`${osArch}`);
-        if (uptimeDays !== undefined) parts.push(`uptime ${uptimeDays}d`);
+        const ud = uptimeDays ?? (Number.isFinite(Number(uptimeDaysLegacy)) ? Number(uptimeDaysLegacy) : null);
+        if (ud !== null) parts.push(`uptime ${Number(ud.toFixed(2))}d`);
+        const lb = lastBootTime ?? (typeof lastBootTimeLegacy === 'string' ? lastBootTimeLegacy : null);
+        if (lb) {
+          const d = new Date(lb);
+          parts.push(`boot ${Number.isNaN(d.getTime()) ? String(lb) : d.toLocaleDateString()}`);
+        }
         
         return parts.length > 0 ? parts.join(' · ') : 'system info';
       }
@@ -608,7 +619,14 @@ export function DataViewer() {
                       className={`p-4 text-sm ${
                         isNotFoundResult(result)
                           ? 'bg-red-500/10 text-red-200 ring-2 ring-red-500 ring-inset'
-                          : 'text-slate-300'
+                          : (() => {
+                              if (result?.checkType !== 'SYSTEM_INFO') return 'text-slate-300';
+                              const { uptimeDays } = parseUptimeInfo(result?.resultData);
+                              const sev = getUptimeSeverity(uptimeDays, rebootThresholds);
+                              if (sev === 'critical') return 'bg-red-500/10 text-red-200 ring-2 ring-red-500 ring-inset';
+                              if (sev === 'warning') return 'bg-amber-500/10 text-amber-200 ring-2 ring-amber-500 ring-inset';
+                              return 'text-slate-300';
+                            })()
                       }`}
                     >
                       {(() => {

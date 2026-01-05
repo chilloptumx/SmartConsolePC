@@ -10,6 +10,7 @@ import { Checkbox } from '../components/ui/checkbox';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../components/ui/dialog';
 import { toast } from 'sonner';
 import { api } from '../services/api';
+import { loadRebootThresholds, parseUptimeInfo, getUptimeSeverity } from '../utils/reboot';
 
 type CheckResult = {
   id: string;
@@ -215,6 +216,7 @@ function summarizeResult(r?: CheckResult) {
       const totalMemoryGB = data.TotalMemoryGB ?? data.totalMemoryGB;
       const osVersion = data.OSVersion ?? data.osVersion;
       const uptimeDays = data.UptimeDays ?? data.uptimeDays;
+      const lastBootTime = data.LastBootTime ?? data.lastBootTime;
       
       const parts: string[] = [];
       if (computerName) parts.push(computerName);
@@ -225,6 +227,7 @@ function summarizeResult(r?: CheckResult) {
       if (totalMemoryGB !== undefined) parts.push(`${totalMemoryGB}GB`);
       if (osVersion) parts.push(osVersion);
       if (uptimeDays !== undefined) parts.push(`${uptimeDays}d uptime`);
+      if (lastBootTime) parts.push(`boot ${shortDate(lastBootTime)}`);
       
       return parts.length > 0 ? parts.join(' · ') : 'system';
     }
@@ -251,6 +254,7 @@ export function PcViewer() {
   const [objectsLoading, setObjectsLoading] = useState<boolean>(false);
   const [objectSearch, setObjectSearch] = useState<string>('');
   const [selectedObjectKeys, setSelectedObjectKeys] = useState<Record<string, boolean>>({});
+  const rebootThresholds = useMemo(() => loadRebootThresholds(), []);
 
   const makeRowKey = (checkType: string, checkName: string) => `${checkType}::${checkName}`;
 
@@ -727,6 +731,12 @@ export function PcViewer() {
 
   const cellClass = (r?: CheckResult) => {
     if (!r) return 'bg-slate-950';
+    if (r.checkType === 'SYSTEM_INFO') {
+      const { uptimeDays } = parseUptimeInfo(r.resultData);
+      const sev = getUptimeSeverity(uptimeDays, rebootThresholds);
+      if (sev === 'critical') return 'bg-red-500/10 text-red-200 border-red-500 ring-2 ring-red-500 ring-inset';
+      if (sev === 'warning') return 'bg-amber-500/10 text-amber-200 border-amber-500 ring-2 ring-amber-500 ring-inset';
+    }
     if (isNotFoundResult(r)) return 'bg-red-500/10 text-red-200 border-red-500 ring-2 ring-red-500 ring-inset';
     if (r.status === 'FAILED') return 'bg-red-500/10 text-red-200 border-red-500/20';
     if (r.status === 'WARNING') return 'bg-amber-500/10 text-amber-200 border-amber-500/20';
