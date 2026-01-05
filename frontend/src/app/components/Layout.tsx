@@ -1,5 +1,5 @@
 import { Outlet, NavLink } from 'react-router-dom';
-import { Monitor, Settings, Database, Activity, PcCase, ListChecks } from 'lucide-react';
+import { Monitor, Settings, Database, Activity, PcCase, ListChecks, Zap } from 'lucide-react';
 
 export function Layout() {
   const navItems = [
@@ -8,6 +8,7 @@ export function Layout() {
     { to: '/data-viewer', icon: Database, label: 'Data Viewer' },
     { to: '/pc-viewer', icon: PcCase, label: 'PC Viewer' },
     { to: '/job-monitor', icon: ListChecks, label: 'Job Monitor' },
+    { to: '/adhoc-scan', icon: Zap, label: 'AdHoc Scan' },
   ];
 
   return (

@@ -15,16 +15,19 @@ model Machine {
   hostname    String   @unique
   ipAddress   String
   pcModel     String?  // e.g., "Dell Optiplex HP 7000"
+  locationId  String?
   status      MachineStatus @default(UNKNOWN)
   lastSeen    DateTime?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   
   // Relationships
+  location    LocationDefinition? @relation(fields: [locationId], references: [id], onDelete: SetNull)
   checkResults CheckResult[]
   jobMachines  JobMachine[]
   auditEvents  AuditEvent[]
   
+  @@index([locationId])
   @@map("machines")
 }
 
@@ -34,6 +37,25 @@ enum MachineStatus {
   WARNING
   ERROR
   UNKNOWN
+}
+
+// Location definitions (name + IPv4 range). Machines get a location assigned based on their ipAddress.
+model LocationDefinition {
+  id         String   @id @default(uuid())
+  name       String   @unique
+  // Optional IP range support (not required for manual assignment mode)
+  startIp    String?
+  endIp      String?
+  // Stored as integer ranges for overlap checks and fast matching (IPv4 only).
+  // Note: bigint is required for full IPv4 space.
+  startIpInt BigInt?
+  endIpInt   BigInt?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  machines   Machine[]
+
+  @@map("location_definitions")
 }
 
 // Registry check configuration
@@ -66,6 +88,34 @@ model FileCheck {
   updatedAt   DateTime @updatedAt
   
   @@map("file_checks")
+}
+
+// User check configuration
+model UserCheck {
+  id           String   @id @default(uuid())
+  name         String
+  checkType    String   @default("CURRENT_AND_LAST") // "CURRENT_AND_LAST", "CURRENT_ONLY", "LAST_ONLY", "USER_SESSIONS", "CUSTOM"
+  customScript String?  // Optional custom PowerShell script
+  description  String?
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  
+  @@map("user_checks")
+}
+
+// System check configuration
+model SystemCheck {
+  id           String   @id @default(uuid())
+  name         String
+  checkType    String   @default("SYSTEM_INFO") // "SYSTEM_INFO", "DISK_SPACE", "MEMORY_DETAILS", "CPU_INFO", "NETWORK_INFO", "CUSTOM"
+  customScript String?  // Optional custom PowerShell script
+  description  String?
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  
+  @@map("system_checks")
 }
 
 // Scheduled job configuration

@@ -66,8 +66,8 @@ services:
         condition: service_healthy
     networks:
       - healthcheck-network
-    # Ensure schema is present before starting the API
-    command: sh -c "npm run prisma:generate && npm run prisma:migrate && npm run build && npm start"
+    # Ensure schema is present, migrations applied, and default data seeded before starting the API
+    command: sh -c "npm run prisma:generate && npm run prisma:migrate && npm run prisma:seed && npm run build && npm start"
 
   # Frontend React App
   frontend:

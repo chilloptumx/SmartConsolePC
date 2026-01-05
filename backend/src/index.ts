@@ -16,6 +16,7 @@ import dataRoutes from './routes/data.js';
 import reportRoutes from './routes/reports.js';
 import monitorRoutes from './routes/monitor.js';
 import settingsRoutes from './routes/settings.js';
+import adhocScanRoutes from './routes/adhoc-scan.js';
 
 const app = express();
 
@@ -44,6 +45,7 @@ app.use('/api/data', dataRoutes);
 app.use('/api/reports', reportRoutes);
 app.use('/api/monitor', monitorRoutes);
 app.use('/api/settings', settingsRoutes);
+app.use('/api/adhoc-scan', adhocScanRoutes);
 
 // 404 handler
 app.use((req, res) => {

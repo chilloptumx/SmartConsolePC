@@ -130,7 +130,7 @@ export async function sendScheduledReport(reportId: string): Promise<boolean> {
     const results = await prisma.checkResult.findMany({
       where: whereClause,
       include: {
-        machine: true,
+        machine: { include: { location: { select: { name: true } } } },
       },
       orderBy: {
         createdAt: 'desc',
@@ -140,7 +140,8 @@ export async function sendScheduledReport(reportId: string): Promise<boolean> {
 
     // Format results for email
     const formattedResults = results.map((r) => ({
-      Machine: r.machine.hostname,
+      Machine: `${r.machine.hostname} (${(r.machine as any).location?.name || 'Undefined'})`,
+      Location: (r.machine as any).location?.name || 'Undefined',
       'Check Type': r.checkType,
       'Check Name': r.checkName,
       Status: r.status,

@@ -10,6 +10,9 @@ const router = Router();
 router.get('/', async (req, res) => {
   const machines = await prisma.machine.findMany({
     orderBy: { hostname: 'asc' },
+    include: {
+      location: { select: { id: true, name: true } },
+    },
   });
   res.json(machines);
 });
@@ -19,6 +22,7 @@ router.get('/:id', async (req, res) => {
   const machine = await prisma.machine.findUnique({
     where: { id: req.params.id },
     include: {
+      location: { select: { id: true, name: true } },
       checkResults: {
         take: 10,
         orderBy: { createdAt: 'desc' },
@@ -49,6 +53,9 @@ router.post('/', async (req, res) => {
         pcModel,
         status: 'UNKNOWN',
       },
+      include: {
+        location: { select: { id: true, name: true } },
+      },
     });
 
     logger.info(`Added new machine: ${hostname}`);
@@ -71,7 +78,7 @@ router.post('/', async (req, res) => {
 
 // Update machine
 router.put('/:id', async (req, res) => {
-  const { hostname, ipAddress, pcModel } = req.body;
+  const { hostname, ipAddress, pcModel, locationId } = req.body;
 
   const machine = await prisma.machine.update({
     where: { id: req.params.id },
@@ -79,7 +86,9 @@ router.put('/:id', async (req, res) => {
       ...(hostname && { hostname }),
       ...(ipAddress && { ipAddress }),
       ...(pcModel && { pcModel }),
+      ...(locationId !== undefined && { locationId: locationId ? String(locationId) : null }),
     },
+    include: { location: { select: { id: true, name: true } } },
   });
 
   await logAuditEvent({
@@ -88,7 +97,7 @@ router.put('/:id', async (req, res) => {
     machineId: machine.id,
     entityType: 'Machine',
     entityId: machine.id,
-    metadata: { hostname, ipAddress, pcModel },
+    metadata: { hostname, ipAddress, pcModel, locationId: locationId ?? undefined },
   });
   res.json(machine);
 });

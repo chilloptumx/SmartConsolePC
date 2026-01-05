@@ -1,4 +1,4 @@
-import { RefreshCw, Plus, TrendingUp, TrendingDown, Minus, Settings } from 'lucide-react';
+import { RefreshCw, Plus, TrendingUp, TrendingDown, Minus, Settings, Download } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Card } from '../components/ui/card';
 import { StatusBadge } from '../components/StatusBadge';
@@ -14,6 +14,7 @@ import { api } from '../services/api';
 export function Dashboard() {
   const [isAddMachineOpen, setIsAddMachineOpen] = useState(false);
   const [isCardConfigOpen, setIsCardConfigOpen] = useState(false);
+  const [isExportOpen, setIsExportOpen] = useState(false);
   const [machines, setMachines] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   
@@ -24,20 +25,63 @@ export function Dashboard() {
     pcModel: true,
   });
 
+  type CollectedObject = { checkType: string; checkName: string; total?: number; firstSeen?: string; lastSeen?: string };
+  type LatestResult = {
+    id: string;
+    machineId: string;
+    checkType: string;
+    checkName: string;
+    status: string;
+    resultData: any;
+    message?: string | null;
+    duration?: number | null;
+    createdAt: string;
+  };
+
+  const makeObjectKey = (checkType: string, checkName: string) => `${checkType}::${checkName}`;
+  const [availableObjects, setAvailableObjects] = useState<CollectedObject[]>([]);
+  const [selectedObjectKeys, setSelectedObjectKeys] = useState<Record<string, boolean>>({});
+  const [latestByMachineAndObject, setLatestByMachineAndObject] = useState<Record<string, LatestResult | undefined>>({});
+
   // Fetch data from API
   useEffect(() => {
+    // Load persisted column settings
+    try {
+      const raw = localStorage.getItem('dashboard.machineTableColumns');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+          if (parsed.displayColumns && typeof parsed.displayColumns === 'object') {
+            setDisplayColumns((prev) => ({ ...prev, ...parsed.displayColumns }));
+          }
+          if (parsed.selectedObjectKeys && typeof parsed.selectedObjectKeys === 'object') {
+            setSelectedObjectKeys(parsed.selectedObjectKeys);
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
     loadData();
   }, []);
 
   const loadData = async () => {
     try {
       setLoading(true);
-      const [machinesData, resultsData] = await Promise.all([
+      const [machinesData] = await Promise.all([
         api.getMachines(),
-        api.getResults({ limit: 5 })
       ]);
       
       setMachines(machinesData);
+
+      // Load dynamic "collected objects" options for the dashboard column picker.
+      // As you add new checks and they collect data, they will show up here automatically.
+      try {
+        const objs = await api.getCollectedObjectsAll();
+        setAvailableObjects(objs);
+      } catch {
+        // non-fatal
+      }
     } catch (error) {
       console.error('Failed to load data:', error);
       toast.error('Failed to load dashboard data');
@@ -46,11 +90,385 @@ export function Dashboard() {
     }
   };
 
+  const summarizeLatest = (r?: LatestResult) => {
+    if (!r) return '';
+    if (r.message) return r.message;
+    const data = r.resultData;
+    if (data && typeof data === 'object') {
+      const exists = (data as any).exists ?? (data as any).Exists;
+      const value = (data as any).value;
+      const valueKind = (data as any).valueKind ?? (data as any).value_kind;
+      const valueType = (data as any).valueType ?? (data as any).value_type;
+      const isDirectory = (data as any).isDirectory;
+      const sizeBytes = (data as any).sizeBytes;
+      const reachable = (data as any).reachable ?? (data as any).Reachable;
+
+      const createdTime = (data as any).createdTime ?? (data as any).creationTime ?? (data as any).created ?? (data as any).CreationTime;
+      const modifiedTime = (data as any).modifiedTime ?? (data as any).lastWriteTime ?? (data as any).modified ?? (data as any).LastWriteTime;
+      const shortDate = (iso: any) => {
+        if (!iso) return '';
+        const d = new Date(String(iso));
+        if (Number.isNaN(d.getTime())) return String(iso);
+        return d.toLocaleDateString();
+      };
+
+      const formatBytesSI = (bytes: number, decimals = 1) => {
+        if (!Number.isFinite(bytes)) return '';
+        const sign = bytes < 0 ? '-' : '';
+        let n = Math.abs(bytes);
+        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        let i = 0;
+        while (n >= 1000 && i < units.length - 1) {
+          n = n / 1000;
+          i += 1;
+        }
+        const d = i === 0 ? 0 : decimals;
+        return `${sign}${n.toFixed(d)} ${units[i]}`;
+      };
+
+      if (r.checkType === 'REGISTRY_CHECK') {
+        if (exists === true && (data as any).valueName) {
+          const typeLabel = valueKind || (valueType ? String(valueType).split('.').pop() : undefined);
+          return typeLabel ? `${String(value)} (${typeLabel})` : String(value);
+        }
+        if (exists === true) return 'found';
+        if (exists === false) return 'missing';
+      }
+
+      if (r.checkType === 'FILE_CHECK') {
+        if (exists === true) {
+          const parts: string[] = [];
+          if (typeof sizeBytes === 'number') parts.push(formatBytesSI(sizeBytes));
+          else if (isDirectory === true) parts.push('dir');
+          else parts.push('found');
+
+          if (modifiedTime) parts.push(`mod ${shortDate(modifiedTime)}`);
+          else if (createdTime) parts.push(`created ${shortDate(createdTime)}`);
+
+          return parts.join(' · ');
+        }
+        if (exists === false) return 'missing';
+      }
+
+      if (r.checkType === 'PING') {
+        // Per user request: keep PING summary simple: success/failed (+ time).
+        const ok =
+          r.status === 'SUCCESS' ||
+          reachable === true ||
+          (data as any).success === true;
+
+        const ms =
+          (typeof (r as any).duration === 'number' && Number.isFinite((r as any).duration) && (r as any).duration >= 0)
+            ? (r as any).duration
+            : (typeof (data as any).responseTime === 'number' && Number.isFinite((data as any).responseTime))
+              ? (data as any).responseTime
+              : (typeof (data as any).avgResponseTime === 'number' && Number.isFinite((data as any).avgResponseTime))
+                ? (data as any).avgResponseTime
+                : null;
+
+        return ms !== null ? `${ok ? 'success' : 'failed'} (${ms}ms)` : (ok ? 'success' : 'failed');
+      }
+
+      if (r.checkType === 'SYSTEM_INFO') {
+        const computerName = (data as any).ComputerName ?? (data as any).computerName;
+        const manufacturer = (data as any).Manufacturer ?? (data as any).manufacturer;
+        const model = (data as any).Model ?? (data as any).model;
+        const totalMemoryGB = (data as any).TotalMemoryGB ?? (data as any).totalMemoryGB;
+        const osVersion = (data as any).OSVersion ?? (data as any).osVersion ?? (data as any).OSCaption ?? (data as any).OS;
+        const osArch = (data as any).OSArchitecture ?? (data as any).osArchitecture;
+        const uptimeDays = (data as any).UptimeDays ?? (data as any).uptimeDays;
+
+        const parts: string[] = [];
+        if (computerName) parts.push(String(computerName));
+        if (manufacturer || model) {
+          const hw = [manufacturer, model].filter(Boolean).join(' ');
+          if (hw) parts.push(hw);
+        }
+        if (totalMemoryGB !== undefined) parts.push(`${totalMemoryGB}GB RAM`);
+        if (osVersion) parts.push(String(osVersion));
+        if (osArch) parts.push(String(osArch));
+        if (uptimeDays !== undefined) parts.push(`uptime ${uptimeDays}d`);
+
+        return parts.length > 0 ? parts.join(' · ') : 'system info';
+      }
+
+      if (r.checkType === 'USER_INFO') {
+        const parseMaybe = (v: any) => {
+          if (v === null || v === undefined) return null;
+          if (typeof v === 'object') return v;
+          if (typeof v !== 'string') return v;
+          const s = v.trim();
+          if (!s) return null;
+          try {
+            return JSON.parse(s);
+          } catch {
+            return v;
+          }
+        };
+
+        const currentRaw = (data as any).currentUser ?? (data as any).current_user;
+        const lastRaw = (data as any).lastUser ?? (data as any).last_user;
+        const current = parseMaybe(currentRaw);
+        const last = parseMaybe(lastRaw);
+
+        let curUser: string | null = null;
+        if (Array.isArray(current)) {
+          const active = current.find((r: any) => String(r?.State ?? r?.state ?? '').toLowerCase() === 'active');
+          const row = active ?? current[0];
+          const u = row?.Username ?? row?.username;
+          if (u) curUser = String(u);
+        } else if (current && typeof current === 'object') {
+          if (!(current as any).NoUserLoggedIn) {
+            const u = (current as any).Username ?? (current as any).username;
+            if (u) curUser = String(u);
+          }
+        } else if (typeof current === 'string') {
+          const s = current.trim();
+          if (s && s.toLowerCase() !== 'unknown') curUser = s;
+        }
+
+        let lastUser: string | null = null;
+        if (last && typeof last === 'object' && !Array.isArray(last)) {
+          const u = (last as any).LastUser ?? (last as any).lastUser ?? (last as any).last_user;
+          if (u && String(u).toLowerCase() !== 'unknown') lastUser = String(u);
+        } else if (typeof last === 'string') {
+          const s = last.trim();
+          if (s && s.toLowerCase() !== 'unknown') lastUser = s;
+        }
+
+        if (curUser) return `current=${curUser}`;
+        if (lastUser) return `last=${lastUser}`;
+        return 'no user';
+      }
+
+      const keys = Object.keys(data);
+      return keys.length ? `${keys.length} fields` : '';
+    }
+    return typeof data === 'string' ? data : '';
+  };
+
+  const isNotFoundResult = (r?: LatestResult) => {
+    if (!r) return false;
+    if (r.checkType !== 'REGISTRY_CHECK' && r.checkType !== 'FILE_CHECK') return false;
+    let data: any = r.resultData;
+    if (typeof data === 'string') {
+      const s = data.trim();
+      if (s) {
+        try {
+          data = JSON.parse(s);
+        } catch {
+          // ignore
+        }
+      }
+    }
+    if (data && typeof data === 'object' && !Array.isArray(data)) {
+      const exists = (data as any).exists ?? (data as any).Exists;
+      if (exists === false) return true;
+    }
+
+    // Fallback: older results (or some error paths) may not include `exists`,
+    // but they still set a clear "not found" message.
+    const msg = typeof r.message === 'string' ? r.message.trim().toLowerCase() : '';
+    if (!msg) return false;
+
+    // Canonical messages produced by the backend scheduler
+    if (msg.includes('path/value not found')) return true;
+    if (msg.includes('registry path/value not found')) return true;
+    if (msg.includes('file/path not found')) return true;
+
+    // Slightly broader (but still constrained to FILE_CHECK/REGISTRY_CHECK)
+    if (msg.includes('not found') && (msg.includes('registry') || msg.includes('file') || msg.includes('path') || msg.includes('value'))) {
+      return true;
+    }
+
+    return false;
+  };
+
+  const escapeCsv = (v: any) => {
+    if (v === null || v === undefined) return '';
+    const s = String(v);
+    if (/[",\r\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+    return s;
+  };
+
+  const escapeHtml = (v: any) => {
+    if (v === null || v === undefined) return '';
+    return String(v)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  };
+
+  const downloadTextFile = (filename: string, content: string, mime: string) => {
+    const blob = new Blob([content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const getMachineTableExportData = () => {
+    const objectKeys = Object.entries(selectedObjectKeys).filter(([, v]) => v).map(([k]) => k);
+    const headers: string[] = ['Machine', 'Status'];
+    if (displayColumns.ipAddress) headers.push('IP Address');
+    if (displayColumns.lastSeen) headers.push('Last Seen');
+    if (displayColumns.pcModel) headers.push('Model');
+    for (const key of objectKeys) {
+      const [, checkName] = key.split('::');
+      headers.push(checkName || key);
+    }
+
+    const rows: string[][] = machines.map((machine) => {
+      const row: string[] = [];
+      const loc = (machine as any).location?.name || 'Undefined';
+      row.push(machine.hostname ? `${machine.hostname} (${loc})` : '');
+      row.push(machine.status || 'UNKNOWN');
+      if (displayColumns.ipAddress) row.push(machine.ipAddress || '');
+      if (displayColumns.lastSeen) row.push(machine.lastSeen ? new Date(machine.lastSeen).toLocaleString() : '');
+      if (displayColumns.pcModel) row.push(machine.pcModel || '');
+      for (const key of objectKeys) {
+        const r = latestByMachineAndObject[`${machine.id}::${key}`];
+        const summary = summarizeLatest(r);
+        row.push(summary || '');
+      }
+      return row;
+    });
+
+    return { headers, rows };
+  };
+
+  const exportMachineStatus = (format: 'csv' | 'html' | 'md') => {
+    if (machines.length === 0) {
+      toast.error('No machines to export');
+      return;
+    }
+
+    const { headers, rows } = getMachineTableExportData();
+    const ts = new Date().toISOString().replace(/[:]/g, '-').replace(/\..+$/, '');
+    const base = `machine-status-${ts}`;
+
+    if (format === 'csv') {
+      const csv = [
+        headers.map(escapeCsv).join(','),
+        ...rows.map((r) => r.map(escapeCsv).join(',')),
+      ].join('\r\n') + '\r\n';
+      downloadTextFile(`${base}.csv`, csv, 'text/csv;charset=utf-8');
+      toast.success('Exported CSV');
+      return;
+    }
+
+    if (format === 'md') {
+      const mdHeader = `| ${headers.map((h) => String(h).replace(/\|/g, '\\|')).join(' | ')} |`;
+      const mdSep = `| ${headers.map(() => '---').join(' | ')} |`;
+      const mdRows = rows.map((r) => `| ${r.map((c) => String(c ?? '').replace(/\|/g, '\\|')).join(' | ')} |`);
+      const md = [
+        `<!-- Generated: ${new Date().toISOString()} -->`,
+        '',
+        mdHeader,
+        mdSep,
+        ...mdRows,
+        '',
+      ].join('\n');
+      downloadTextFile(`${base}.md`, md, 'text/markdown;charset=utf-8');
+      toast.success('Exported Markdown');
+      return;
+    }
+
+    // html
+    const html = `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Machine Status Export</title>
+    <style>
+      body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; padding: 24px; }
+      h1 { margin: 0 0 12px; font-size: 18px; }
+      .meta { color: #555; font-size: 12px; margin-bottom: 16px; }
+      table { border-collapse: collapse; width: 100%; }
+      th, td { border: 1px solid #ddd; padding: 8px 10px; text-align: left; vertical-align: top; }
+      th { background: #f5f5f5; }
+      tr:nth-child(even) td { background: #fafafa; }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    </style>
+  </head>
+  <body>
+    <h1>Machine Status</h1>
+    <div class="meta">Generated: ${escapeHtml(new Date().toISOString())}</div>
+    <table>
+      <thead>
+        <tr>
+          ${headers.map((h) => `<th>${escapeHtml(h)}</th>`).join('')}
+        </tr>
+      </thead>
+      <tbody>
+        ${rows
+          .map(
+            (r) =>
+              `<tr>${r
+                .map((c) => `<td>${escapeHtml(c)}</td>`)
+                .join('')}</tr>`
+          )
+          .join('')}
+      </tbody>
+    </table>
+  </body>
+</html>
+`;
+    downloadTextFile(`${base}.html`, html, 'text/html;charset=utf-8');
+    toast.success('Exported HTML');
+  };
+
+  const refreshLatestObjectColumns = async (machineList: any[], selectedKeys: Record<string, boolean>) => {
+    const selected = Object.entries(selectedKeys)
+      .filter(([, v]) => v)
+      .map(([k]) => k);
+    if (machineList.length === 0 || selected.length === 0) {
+      setLatestByMachineAndObject({});
+      return;
+    }
+
+    const objects = selected.map((k) => {
+      const [checkType, checkName] = k.split('::');
+      return { checkType, checkName };
+    });
+
+    try {
+      const { results } = await api.getLatestResultsForObjects({
+        machineIds: machineList.map((m) => m.id),
+        objects,
+      });
+      const map: Record<string, LatestResult> = {};
+      for (const r of results || []) {
+        const key = `${r.machineId}::${r.checkType}::${r.checkName}`;
+        map[key] = r;
+      }
+      setLatestByMachineAndObject(map);
+    } catch (e) {
+      console.error('Failed to load latest results for dashboard columns', e);
+      toast.error('Failed to load dashboard columns');
+      setLatestByMachineAndObject({});
+    }
+  };
+
+  useEffect(() => {
+    refreshLatestObjectColumns(machines, selectedObjectKeys);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [machines, selectedObjectKeys]);
+
   const stats = {
     total: machines.length,
-    online: machines.filter((m) => m.status === 'ONLINE').length,
-    offline: machines.filter((m) => m.status === 'OFFLINE').length,
-    warnings: machines.filter((m) => m.status === 'WARNING' || m.status === 'ERROR').length,
+    // Treat WARNING as still online/reachable; treat UNKNOWN + ERROR as needing attention/offline.
+    // (There is currently no separate "Errors" summary card.)
+    online: machines.filter((m) => m.status === 'ONLINE' || m.status === 'WARNING').length,
+    offline: machines.filter((m) => m.status === 'OFFLINE' || m.status === 'UNKNOWN' || m.status === 'ERROR').length,
+    warnings: machines.filter((m) => m.status === 'WARNING').length,
   };
 
   const badgeStatus = (status?: string) => {
@@ -227,6 +645,63 @@ export function Dashboard() {
             <h2 className="text-xl font-semibold">Machine Status</h2>
             <div className="flex items-center gap-3">
               <span className="text-sm text-slate-400">Last check: 2 mins ago</span>
+              <Dialog open={isExportOpen} onOpenChange={setIsExportOpen}>
+                <DialogTrigger asChild>
+                  <Button variant="outline" size="sm" className="border-slate-700 bg-slate-950 hover:bg-slate-900">
+                    <Download className="w-4 h-4 mr-2" />
+                    Export
+                  </Button>
+                </DialogTrigger>
+                <DialogContent className="bg-slate-900 border-slate-800 sm:max-w-[520px]">
+                  <DialogHeader>
+                    <DialogTitle className="text-slate-100">Export Machine Status</DialogTitle>
+                    <DialogDescription className="text-slate-400">
+                      Exports the machine status table exactly as currently shown (including any selected collected-data columns).
+                    </DialogDescription>
+                  </DialogHeader>
+                  <div className="py-4 space-y-3">
+                    <div className="text-xs text-slate-500">
+                      Rows: <span className="text-slate-300">{machines.length}</span>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <Button
+                        className="bg-cyan-600 hover:bg-cyan-700"
+                        onClick={() => {
+                          exportMachineStatus('csv');
+                          setIsExportOpen(false);
+                        }}
+                      >
+                        Export CSV
+                      </Button>
+                      <Button
+                        variant="outline"
+                        className="border-slate-700 bg-slate-950 hover:bg-slate-900"
+                        onClick={() => {
+                          exportMachineStatus('html');
+                          setIsExportOpen(false);
+                        }}
+                      >
+                        Export HTML
+                      </Button>
+                      <Button
+                        variant="outline"
+                        className="border-slate-700 bg-slate-950 hover:bg-slate-900"
+                        onClick={() => {
+                          exportMachineStatus('md');
+                          setIsExportOpen(false);
+                        }}
+                      >
+                        Export Markdown
+                      </Button>
+                    </div>
+                  </div>
+                  <DialogFooter>
+                    <Button variant="outline" className="border-slate-700" onClick={() => setIsExportOpen(false)}>
+                      Close
+                    </Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
               <Dialog open={isCardConfigOpen} onOpenChange={setIsCardConfigOpen}>
                 <DialogTrigger asChild>
                   <Button variant="ghost" size="sm" className="hover:bg-slate-800 text-slate-400 hover:text-slate-200">
@@ -281,10 +756,51 @@ export function Dashboard() {
                         </div>
                       </label>
                     </div>
+
+                    <div className="pt-2 border-t border-slate-800">
+                      <div className="text-sm font-semibold text-slate-200 mb-2">Collected Data Columns</div>
+                      <div className="text-xs text-slate-400 mb-3">
+                        Select any collected objects to show their latest result per machine.
+                      </div>
+                      <div className="max-h-64 overflow-auto pr-1 space-y-2">
+                        {availableObjects.length === 0 ? (
+                          <div className="text-sm text-slate-500">No collected objects found yet.</div>
+                        ) : (
+                          availableObjects.map((o) => {
+                            const key = makeObjectKey(o.checkType, o.checkName);
+                            const label = o.checkName || o.checkType;
+                            return (
+                              <label key={key} className="flex items-start gap-3">
+                                <Checkbox
+                                  checked={!!selectedObjectKeys[key]}
+                                  onCheckedChange={(checked) =>
+                                    setSelectedObjectKeys((prev) => ({ ...prev, [key]: checked as boolean }))
+                                  }
+                                />
+                                <div className="min-w-0">
+                                  <div className="text-slate-300 text-sm truncate" title={`${o.checkType} · ${o.checkName}`}>
+                                    {label}
+                                  </div>
+                                  <div className="text-slate-500 text-xs font-mono truncate">{o.checkType}</div>
+                                </div>
+                              </label>
+                            );
+                          })
+                        )}
+                      </div>
+                    </div>
                   </div>
                   <DialogFooter>
                     <Button 
                       onClick={() => {
+                        try {
+                          localStorage.setItem(
+                            'dashboard.machineTableColumns',
+                            JSON.stringify({ displayColumns, selectedObjectKeys })
+                          );
+                        } catch {
+                          // ignore
+                        }
                         setIsCardConfigOpen(false);
                         toast.success('Display settings saved');
                       }} 
@@ -313,17 +829,28 @@ export function Dashboard() {
                   {displayColumns.pcModel && (
                     <th className="text-left p-4 text-sm font-medium text-slate-400">Model</th>
                   )}
+                  {Object.entries(selectedObjectKeys)
+                    .filter(([, v]) => v)
+                    .map(([key]) => {
+                      const [checkType, checkName] = key.split('::');
+                      const title = `${checkType} · ${checkName}`;
+                      return (
+                        <th key={key} className="text-left p-4 text-sm font-medium text-slate-400" title={title}>
+                          <span className="block max-w-[220px] truncate">{checkName || checkType}</span>
+                        </th>
+                      );
+                    })}
                   <th className="text-right p-4 text-sm font-medium text-slate-400">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
                   <tr>
-                    <td colSpan={6} className="p-8 text-center text-slate-400">Loading...</td>
+                    <td colSpan={999} className="p-8 text-center text-slate-400">Loading...</td>
                   </tr>
                 ) : machines.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="p-8 text-center text-slate-400">
+                    <td colSpan={999} className="p-8 text-center text-slate-400">
                       No machines added yet. Click "Add Machine" to get started.
                     </td>
                   </tr>
@@ -331,13 +858,25 @@ export function Dashboard() {
                   machines.map((machine) => (
                     <tr key={machine.id} className="border-b border-slate-800 hover:bg-slate-800/40">
                       <td className="p-4">
-                        <Link
-                          to={`/pc-viewer?machineId=${encodeURIComponent(machine.id)}`}
-                          className="font-mono text-sm text-cyan-300 hover:text-cyan-200 underline-offset-2 hover:underline"
-                          title="View PC viewer"
-                        >
-                          {machine.hostname}
-                        </Link>
+                        <div className="flex items-center gap-2 min-w-0">
+                          <Link
+                            to={`/pc-viewer?machineId=${encodeURIComponent(machine.id)}`}
+                            className="font-mono text-sm text-cyan-300 hover:text-cyan-200 underline-offset-2 hover:underline truncate"
+                            title="View PC viewer"
+                          >
+                            {machine.hostname}
+                          </Link>
+                          <span
+                            className={`shrink-0 px-2 py-0.5 rounded text-[11px] border ${
+                              (machine as any).location?.name
+                                ? 'bg-slate-800 text-slate-200 border-slate-700'
+                                : 'bg-slate-900 text-slate-500 border-slate-800'
+                            }`}
+                            title="Location"
+                          >
+                            {(machine as any).location?.name || 'Undefined'}
+                          </span>
+                        </div>
                       </td>
                       <td className="p-4">
                         <StatusBadge status={badgeStatus(machine.status)} withDot>
@@ -357,6 +896,40 @@ export function Dashboard() {
                           {machine.pcModel || '-'}
                         </td>
                       )}
+                      {Object.entries(selectedObjectKeys)
+                        .filter(([, v]) => v)
+                        .map(([key]) => {
+                          const r = latestByMachineAndObject[`${machine.id}::${key}`];
+                          const summary = summarizeLatest(r);
+                          const notFound =
+                            isNotFoundResult(r) ||
+                            ((r?.checkType === 'REGISTRY_CHECK' || r?.checkType === 'FILE_CHECK') &&
+                              typeof summary === 'string' &&
+                              summary.toLowerCase().includes('not found'));
+                          return (
+                            <td
+                              key={key}
+                              className={`p-4 text-sm ${
+                                notFound
+                                  ? 'bg-red-500/10 text-red-200 ring-2 ring-red-500 ring-inset'
+                                  : 'text-slate-300'
+                              }`}
+                            >
+                              <div className="max-w-[260px] truncate" title={summary || ''}>
+                                {notFound && summary ? (
+                                  <span
+                                    className="inline-block max-w-full truncate px-2 py-1 rounded-none bg-red-500/10 text-red-200"
+                                    style={{ boxShadow: 'inset 0 0 0 2px rgb(239 68 68)' }}
+                                  >
+                                    {summary}
+                                  </span>
+                                ) : (
+                                  summary || <span className="text-slate-500">-</span>
+                                )}
+                              </div>
+                            </td>
+                          );
+                        })}
                       <td className="p-4 text-right">
                         <Button
                           variant="outline"

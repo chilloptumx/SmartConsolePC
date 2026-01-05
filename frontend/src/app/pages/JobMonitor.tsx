@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -22,6 +23,7 @@ type MonitorEvent = {
 };
 
 export function JobMonitor() {
+  const navigate = useNavigate();
   const [machines, setMachines] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [events, setEvents] = useState<MonitorEvent[]>([]);
@@ -76,6 +78,12 @@ export function JobMonitor() {
 
   const visible = useMemo(() => events, [events]);
 
+  const locationForMachineId = (id?: string) => {
+    if (!id) return 'Undefined';
+    const m = machines.find((x) => x.id === id);
+    return m?.location?.name || 'Undefined';
+  };
+
   const badgeClass = (e: MonitorEvent) => {
     if (e.source === 'CHECK_RESULT') {
       if (e.status === 'FAILED') return 'bg-red-500/10 text-red-300 border border-red-500/20';
@@ -94,6 +102,13 @@ export function JobMonitor() {
           <h1 className="text-3xl font-semibold">Job Monitor</h1>
         </div>
         <div className="flex items-center gap-3">
+          <Button
+            variant="outline"
+            className="border-slate-700 bg-slate-950 hover:bg-slate-900"
+            onClick={() => navigate('/adhoc-scan')}
+          >
+            AdHoc Scan
+          </Button>
           <Button
             variant="outline"
             className="border-slate-700 bg-slate-950 hover:bg-slate-900"
@@ -116,7 +131,9 @@ export function JobMonitor() {
               <SelectContent className="bg-slate-900 border-slate-800">
                 <SelectItem value="all">All Machines</SelectItem>
                 {machines.map((m) => (
-                  <SelectItem key={m.id} value={m.id}>{m.hostname}</SelectItem>
+                  <SelectItem key={m.id} value={m.id}>
+                    {m.hostname} ({m.location?.name || 'Undefined'})
+                  </SelectItem>
                 ))}
               </SelectContent>
             </Select>
@@ -192,7 +209,7 @@ export function JobMonitor() {
                       {new Date(e.createdAt).toLocaleString()}
                     </td>
                     <td className="p-4 text-sm text-slate-300 font-mono">
-                      {e.machineHostname || '-'}
+                      {e.machineHostname || '-'} <span className="text-slate-500">({locationForMachineId(e.machineId)})</span>
                     </td>
                     <td className="p-4 text-sm">
                       <span className={`inline-flex items-center px-2 py-0.5 rounded ${badgeClass(e)}`}>
@@ -248,7 +265,9 @@ export function JobMonitor() {
               </div>
               <div className="text-sm text-slate-300">
                 <span className="text-slate-500">Machine:</span>{' '}
-                <span className="font-mono">{selected.machineHostname || '-'}</span>
+                <span className="font-mono">
+                  {selected.machineHostname || '-'} ({locationForMachineId(selected.machineId)})
+                </span>
               </div>
               <div className="text-sm text-slate-300">
                 <span className="text-slate-500">Type:</span>{' '}

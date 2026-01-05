@@ -179,6 +179,260 @@ router.delete('/file-checks/:id', async (req, res) => {
   res.json({ success: true });
 });
 
+// ========== USER CHECKS ==========
+
+// Get all user checks
+router.get('/user-checks', async (req, res) => {
+  const checks = await prisma.userCheck.findMany({
+    orderBy: { name: 'asc' },
+  });
+  res.json(checks);
+});
+
+// Create user check
+router.post('/user-checks', async (req, res) => {
+  const { name, checkType, customScript, description } = req.body;
+
+  if (!name) {
+    return res.status(400).json({ error: 'Name required' });
+  }
+
+  const check = await prisma.userCheck.create({
+    data: {
+      name,
+      checkType: checkType || 'CURRENT_AND_LAST',
+      customScript,
+      description,
+    },
+  });
+
+  logger.info(`Created user check: ${name}`);
+  await logAuditEvent({
+    eventType: 'USER_CHECK_CREATED',
+    message: `User check created: ${name}`,
+    entityType: 'UserCheck',
+    entityId: check.id,
+    metadata: { id: check.id, name, checkType: check.checkType, isActive: check.isActive },
+  });
+  res.status(201).json(check);
+});
+
+// Update user check
+router.put('/user-checks/:id', async (req, res) => {
+  const { name, checkType, customScript, description, isActive } = req.body;
+
+  const check = await prisma.userCheck.update({
+    where: { id: req.params.id },
+    data: {
+      ...(name && { name }),
+      ...(checkType && { checkType }),
+      ...(customScript !== undefined && { customScript }),
+      ...(description !== undefined && { description }),
+      ...(isActive !== undefined && { isActive }),
+    },
+  });
+
+  await logAuditEvent({
+    eventType: 'USER_CHECK_UPDATED',
+    message: `User check updated: ${check.name}`,
+    entityType: 'UserCheck',
+    entityId: check.id,
+    metadata: { id: check.id, name, checkType, isActive },
+  });
+  res.json(check);
+});
+
+// Delete user check
+router.delete('/user-checks/:id', async (req, res) => {
+  const existing = await prisma.userCheck.findUnique({ where: { id: req.params.id } });
+  await prisma.userCheck.delete({
+    where: { id: req.params.id },
+  });
+
+  logger.info(`Deleted user check: ${req.params.id}`);
+  await logAuditEvent({
+    eventType: 'USER_CHECK_DELETED',
+    message: `User check deleted: ${existing?.name ?? req.params.id}`,
+    entityType: 'UserCheck',
+    entityId: req.params.id,
+    metadata: { id: req.params.id, name: existing?.name, checkType: existing?.checkType },
+  });
+  res.json({ success: true });
+});
+
+// ========== SYSTEM CHECKS ==========
+
+// Get all system checks
+router.get('/system-checks', async (req, res) => {
+  const checks = await prisma.systemCheck.findMany({
+    orderBy: { name: 'asc' },
+  });
+  res.json(checks);
+});
+
+// Create system check
+router.post('/system-checks', async (req, res) => {
+  const { name, checkType, customScript, description } = req.body;
+
+  if (!name) {
+    return res.status(400).json({ error: 'Name required' });
+  }
+
+  const check = await prisma.systemCheck.create({
+    data: {
+      name,
+      checkType: checkType || 'SYSTEM_INFO',
+      customScript,
+      description,
+    },
+  });
+
+  logger.info(`Created system check: ${name}`);
+  await logAuditEvent({
+    eventType: 'SYSTEM_CHECK_CREATED',
+    message: `System check created: ${name}`,
+    entityType: 'SystemCheck',
+    entityId: check.id,
+    metadata: { id: check.id, name, checkType: check.checkType, isActive: check.isActive },
+  });
+  res.status(201).json(check);
+});
+
+// Update system check
+router.put('/system-checks/:id', async (req, res) => {
+  const { name, checkType, customScript, description, isActive } = req.body;
+
+  const check = await prisma.systemCheck.update({
+    where: { id: req.params.id },
+    data: {
+      ...(name && { name }),
+      ...(checkType && { checkType }),
+      ...(customScript !== undefined && { customScript }),
+      ...(description !== undefined && { description }),
+      ...(isActive !== undefined && { isActive }),
+    },
+  });
+
+  await logAuditEvent({
+    eventType: 'SYSTEM_CHECK_UPDATED',
+    message: `System check updated: ${check.name}`,
+    entityType: 'SystemCheck',
+    entityId: check.id,
+    metadata: { id: check.id, name, checkType, isActive },
+  });
+  res.json(check);
+});
+
+// Delete system check
+router.delete('/system-checks/:id', async (req, res) => {
+  const existing = await prisma.systemCheck.findUnique({ where: { id: req.params.id } });
+  await prisma.systemCheck.delete({
+    where: { id: req.params.id },
+  });
+
+  logger.info(`Deleted system check: ${req.params.id}`);
+  await logAuditEvent({
+    eventType: 'SYSTEM_CHECK_DELETED',
+    message: `System check deleted: ${existing?.name ?? req.params.id}`,
+    entityType: 'SystemCheck',
+    entityId: req.params.id,
+    metadata: { id: req.params.id, name: existing?.name, checkType: existing?.checkType },
+  });
+  res.json({ success: true });
+});
+
+// ========== LOCATION DEFINITIONS ==========
+
+router.get('/locations', async (req, res) => {
+  const locations = await prisma.locationDefinition.findMany({
+    orderBy: [{ name: 'asc' }],
+    select: {
+      id: true,
+      name: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+  });
+  res.json(locations);
+});
+
+router.post('/locations', async (req, res) => {
+  const { name } = req.body ?? {};
+  if (!name) return res.status(400).json({ error: 'name is required' });
+
+  try {
+    const created = await prisma.locationDefinition.create({
+      data: {
+        name: String(name),
+        // Manual assignment mode: no IP range required.
+        startIp: null,
+        endIp: null,
+        startIpInt: null,
+        endIpInt: null,
+      },
+      select: { id: true, name: true, createdAt: true, updatedAt: true },
+    });
+
+    await logAuditEvent({
+      eventType: 'LOCATION_CREATED',
+      message: `Location created: ${created.name}`,
+      entityType: 'LocationDefinition',
+      entityId: created.id,
+      metadata: { ...created },
+    });
+
+    res.status(201).json(created);
+  } catch (error: any) {
+    if (error.code === 'P2002') {
+      return res.status(409).json({ error: 'Location name already exists' });
+    }
+    throw error;
+  }
+});
+
+router.put('/locations/:id', async (req, res) => {
+  const { name } = req.body ?? {};
+  if (!name) return res.status(400).json({ error: 'name is required' });
+
+  const existing = await prisma.locationDefinition.findUnique({ where: { id: req.params.id } });
+  if (!existing) return res.status(404).json({ error: 'Location not found' });
+
+  const updated = await prisma.locationDefinition.update({
+    where: { id: req.params.id },
+    data: {
+      name: String(name),
+    },
+    select: { id: true, name: true, createdAt: true, updatedAt: true },
+  });
+
+  await logAuditEvent({
+    eventType: 'LOCATION_UPDATED',
+    message: `Location updated: ${updated.name}`,
+    entityType: 'LocationDefinition',
+    entityId: updated.id,
+    metadata: { before: { id: existing.id, name: existing.name }, after: updated },
+  });
+
+  res.json(updated);
+});
+
+router.delete('/locations/:id', async (req, res) => {
+  const existing = await prisma.locationDefinition.findUnique({ where: { id: req.params.id }, select: { id: true, name: true } });
+  if (!existing) return res.status(404).json({ error: 'Location not found' });
+
+  await prisma.locationDefinition.delete({ where: { id: req.params.id } });
+
+  logger.info(`Deleted location: ${req.params.id}`);
+  await logAuditEvent({
+    eventType: 'LOCATION_DELETED',
+    message: `Location deleted: ${existing.name}`,
+    entityType: 'LocationDefinition',
+    entityId: existing.id,
+    metadata: { ...existing },
+  });
+  res.json({ success: true });
+});
+
 // ========== APP SETTINGS ==========
 
 // Get app settings

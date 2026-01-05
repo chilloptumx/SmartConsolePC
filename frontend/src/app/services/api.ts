@@ -133,6 +133,81 @@ class ApiClient {
     });
   }
 
+  // User Checks
+  async getUserChecks() {
+    return this.request<any[]>('/api/config/user-checks');
+  }
+
+  async createUserCheck(data: any) {
+    return this.request<any>('/api/config/user-checks', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async updateUserCheck(id: string, data: any) {
+    return this.request<any>(`/api/config/user-checks/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deleteUserCheck(id: string) {
+    return this.request<any>(`/api/config/user-checks/${id}`, {
+      method: 'DELETE',
+    });
+  }
+
+  // System Checks
+  async getSystemChecks() {
+    return this.request<any[]>('/api/config/system-checks');
+  }
+
+  async createSystemCheck(data: any) {
+    return this.request<any>('/api/config/system-checks', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async updateSystemCheck(id: string, data: any) {
+    return this.request<any>(`/api/config/system-checks/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deleteSystemCheck(id: string) {
+    return this.request<any>(`/api/config/system-checks/${id}`, {
+      method: 'DELETE',
+    });
+  }
+
+  // Locations
+  async getLocations() {
+    return this.request<any[]>('/api/config/locations');
+  }
+
+  async createLocation(data: { name: string }) {
+    return this.request<any>('/api/config/locations', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async updateLocation(id: string, data: { name: string }) {
+    return this.request<any>(`/api/config/locations/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deleteLocation(id: string) {
+    return this.request<any>(`/api/config/locations/${id}`, {
+      method: 'DELETE',
+    });
+  }
+
   // Scheduled Jobs
   async getScheduledJobs() {
     return this.request<any[]>('/api/schedules/jobs');
@@ -170,6 +245,11 @@ class ApiClient {
     return this.request<any>(`/api/data/results${query ? `?${query}` : ''}`);
   }
 
+  async getUserInfoUsers(params: Record<string, any> = {}) {
+    const query = new URLSearchParams(params).toString();
+    return this.request<string[]>(`/api/data/users${query ? `?${query}` : ''}`);
+  }
+
   async getCheckResults(params?: Record<string, any>) {
     const query = new URLSearchParams(params).toString();
     return this.request<any[]>(`/api/data/results${query ? `?${query}` : ''}`);
@@ -180,6 +260,38 @@ class ApiClient {
     return this.request<any[]>(
       `/api/data/collected-objects?machineId=${encodeURIComponent(machineId)}${query ? `&${query}` : ''}`
     );
+  }
+
+  async getCollectedObjectsAll(params: Record<string, any> = {}) {
+    const query = new URLSearchParams(params).toString();
+    return this.request<any[]>(`/api/data/collected-objects?scope=all${query ? `&${query}` : ''}`);
+  }
+
+  async getLatestResultsForObjects(payload: { machineIds: string[]; objects: { checkType: string; checkName: string }[]; since?: string }) {
+    return this.request<{ results: any[] }>(`/api/data/latest-results`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  // Ad-hoc scan
+  async runAdHocScan(payload: {
+    machineIds: string[];
+    builtIns?: { ping?: boolean; userInfo?: boolean; systemInfo?: boolean };
+    registryCheckIds?: string[];
+    fileCheckIds?: string[];
+    userCheckIds?: string[];
+    systemCheckIds?: string[];
+  }) {
+    return this.request<{
+      startedAt: string;
+      machineIds: string[];
+      expected: { machineId: string; checkType: string; checkName: string }[];
+      expectedCount: number;
+    }>(`/api/adhoc-scan/run`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
   }
 
   async getResult(id: string) {
@@ -221,6 +333,30 @@ class ApiClient {
 
   async getBuiltInCheckSettings() {
     return this.request<any>('/api/settings/checks');
+  }
+
+  // Scan Authentication (WinRM)
+  async getScanAuthSettings() {
+    return this.request<any>('/api/settings/auth');
+  }
+
+  async updateScanAuthSettings(data: any) {
+    return this.request<any>('/api/settings/auth', {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  }
+
+  // Database (read-only info + purge)
+  async getDatabaseSettings() {
+    return this.request<any>('/api/settings/database');
+  }
+
+  async purgeDatabaseData(payload: { days?: number | null; confirm: true }) {
+    return this.request<any>('/api/settings/database/purge', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
   }
 
   async createEmailReport(data: any) {

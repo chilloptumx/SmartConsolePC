@@ -69,7 +69,7 @@ function summarizeResult(r?: CheckResult) {
     const sizeBytes = data.sizeBytes;
     const createdTime = (data as any).createdTime ?? (data as any).creationTime ?? (data as any).created ?? (data as any).CreationTime;
     const modifiedTime = (data as any).modifiedTime ?? (data as any).lastWriteTime ?? (data as any).modified ?? (data as any).LastWriteTime;
-    const reachable = data.reachable;
+    const reachable = (data as any).reachable ?? (data as any).Reachable;
 
     const shortDate = (iso: any) => {
       if (!iso) return '';
@@ -102,8 +102,94 @@ function summarizeResult(r?: CheckResult) {
       if (exists === false) return 'missing';
     }
 
-    if (r.checkType === 'PING' && reachable !== undefined) {
-      return reachable ? 'ok' : 'down';
+    if (r.checkType === 'PING') {
+      // Per user request: keep PING summary simple: success/failed (+ time).
+      const ok =
+        r.status === 'SUCCESS' ||
+        reachable === true ||
+        (data as any).success === true;
+
+      const ms =
+        (typeof (r as any).duration === 'number' && Number.isFinite((r as any).duration) && (r as any).duration >= 0)
+          ? (r as any).duration
+          : (typeof (data as any).responseTime === 'number' && Number.isFinite((data as any).responseTime))
+            ? (data as any).responseTime
+            : (typeof (data as any).avgResponseTime === 'number' && Number.isFinite((data as any).avgResponseTime))
+              ? (data as any).avgResponseTime
+              : null;
+
+      return ms !== null ? `${ok ? 'success' : 'failed'} (${ms}ms)` : (ok ? 'success' : 'failed');
+    }
+
+    if (r.checkType === 'USER_INFO') {
+      const parseMaybe = (v: any) => {
+        if (v === null || v === undefined) return null;
+        if (typeof v === 'object') return v;
+        if (typeof v !== 'string') return v;
+        const s = v.trim();
+        if (!s) return null;
+        try {
+          return JSON.parse(s);
+        } catch {
+          return v;
+        }
+      };
+
+      const currentRaw = (data as any).currentUser ?? (data as any).current_user;
+      const lastRaw = (data as any).lastUser ?? (data as any).last_user;
+      const current = parseMaybe(currentRaw);
+      const last = parseMaybe(lastRaw);
+
+      let curUser: string | null = null;
+      if (Array.isArray(current)) {
+        const active = current.find((r: any) => String(r?.State ?? r?.state ?? '').toLowerCase() === 'active');
+        const row = active ?? current[0];
+        const u = row?.Username ?? row?.username;
+        if (u) curUser = String(u);
+      } else if (current && typeof current === 'object') {
+        if (!(current as any).NoUserLoggedIn) {
+          const u = (current as any).Username ?? (current as any).username;
+          if (u) curUser = String(u);
+        }
+      } else if (typeof current === 'string') {
+        const s = current.trim();
+        if (s && s.toLowerCase() !== 'unknown') curUser = s;
+      }
+
+      let lastUser: string | null = null;
+      if (last && typeof last === 'object' && !Array.isArray(last)) {
+        const u = (last as any).LastUser ?? (last as any).lastUser ?? (last as any).last_user;
+        if (u && String(u).toLowerCase() !== 'unknown') lastUser = String(u);
+      } else if (typeof last === 'string') {
+        const s = last.trim();
+        if (s && s.toLowerCase() !== 'unknown') lastUser = s;
+      }
+
+      const parts: string[] = [];
+      if (curUser) parts.push(`current=${curUser}`);
+      if (lastUser) parts.push(`last=${lastUser}`);
+      return parts.length ? parts.join(' · ') : 'no user';
+    }
+
+    if (r.checkType === 'SYSTEM_INFO') {
+      const computerName = data.ComputerName ?? data.computerName;
+      const manufacturer = data.Manufacturer ?? data.manufacturer;
+      const model = data.Model ?? data.model;
+      const totalMemoryGB = data.TotalMemoryGB ?? data.totalMemoryGB;
+      const osVersion = data.OSVersion ?? data.osVersion;
+      const uptimeDays = data.UptimeDays ?? data.uptimeDays;
+      
+      const parts: string[] = [];
+      if (computerName) parts.push(computerName);
+      if (manufacturer || model) {
+        const hw = [manufacturer, model].filter(Boolean).join(' ');
+        if (hw) parts.push(hw);
+      }
+      if (totalMemoryGB !== undefined) parts.push(`${totalMemoryGB}GB`);
+      if (osVersion) parts.push(osVersion);
+      if (uptimeDays !== undefined) parts.push(`${uptimeDays}d uptime`);
+      
+      return parts.length > 0 ? parts.join(' · ') : 'system';
     }
 
     // Generic fallback: compact object
@@ -240,10 +326,12 @@ export function PcViewer() {
   }, [selectedMachineId, dateFrom, dateTo]);
 
   const getSelectedMachine = () => machines.find((m) => m.id === selectedMachineId);
+  const getMachineLocationName = (m: any) => (m?.location?.name ? String(m.location.name) : 'Undefined');
 
   const exportDisplayedCsv = () => {
     try {
       const machine = getSelectedMachine();
+      const loc = getMachineLocationName(machine);
       const rows: any[] = [];
 
       for (const row of pivot) {
@@ -253,7 +341,8 @@ export function PcViewer() {
           if (!r) continue;
           rows.push({
             machineId: selectedMachineId,
-            machine: machine?.hostname || '',
+            machine: machine?.hostname ? `${machine.hostname} (${loc})` : '',
+            location: loc,
             objectName: row.checkName,
             checkType: row.checkType,
             day: dayKey,
@@ -291,7 +380,7 @@ export function PcViewer() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `pc-viewer-${machine?.hostname || selectedMachineId}-${dateFrom}_to_${dateTo}.csv`;
+      a.download = `pc-viewer-${machine?.hostname || selectedMachineId}-${loc}-${dateFrom}_to_${dateTo}.csv`;
       a.style.display = 'none';
       document.body.appendChild(a);
       a.click();
@@ -305,9 +394,11 @@ export function PcViewer() {
 
   const buildDisplayedRows = () => {
     const machine = getSelectedMachine();
+    const loc = getMachineLocationName(machine);
     const out: Array<{
       machineId: string;
       machine: string;
+      location: string;
       objectName: string;
       checkType: string;
       day: string;
@@ -326,7 +417,8 @@ export function PcViewer() {
         if (!r) continue;
         out.push({
           machineId: selectedMachineId,
-          machine: machine?.hostname || '',
+          machine: machine?.hostname ? `${machine.hostname} (${loc})` : '',
+          location: loc,
           objectName: row.checkName,
           checkType: row.checkType,
           day: dayKey,
@@ -371,15 +463,17 @@ export function PcViewer() {
         toast.error('Select a machine first');
         return;
       }
+      const loc = getMachineLocationName(machine);
       if (days.length === 0) {
         toast.error('Select a valid date range first');
         return;
       }
 
       const lines: string[] = [];
-      lines.push(`# PC Viewer: ${machine.hostname}`);
+      lines.push(`# PC Viewer: ${machine.hostname} (${loc})`);
       lines.push('');
-      lines.push(`- **Machine**: ${machine.hostname}`);
+      lines.push(`- **Machine**: ${machine.hostname} (${loc})`);
+      lines.push(`- **Location**: ${loc}`);
       lines.push(`- **Machine ID**: ${selectedMachineId}`);
       lines.push(`- **Date range**: ${dateFrom} to ${dateTo}`);
       lines.push(`- **Generated**: ${new Date().toLocaleString()}`);
@@ -410,7 +504,7 @@ export function PcViewer() {
         lines.push('');
       }
 
-      const filename = `pc-viewer-${machine.hostname}-${dateFrom}_to_${dateTo}.md`;
+      const filename = `pc-viewer-${machine.hostname}-${loc}-${dateFrom}_to_${dateTo}.md`;
       downloadTextFile(filename, lines.join('\n'), 'text/markdown;charset=utf-8');
       toast.success('MD exported');
     } catch (e) {
@@ -425,12 +519,13 @@ export function PcViewer() {
         toast.error('Select a machine first');
         return;
       }
+      const loc = getMachineLocationName(machine);
       if (days.length === 0) {
         toast.error('Select a valid date range first');
         return;
       }
 
-      const title = `PC Viewer: ${machine.hostname}`;
+      const title = `PC Viewer: ${machine.hostname} (${loc})`;
       const head = `
 <!doctype html>
 <html lang="en">
@@ -458,7 +553,8 @@ export function PcViewer() {
 <body>
   <h1>${escapeHtml(title)}</h1>
   <dl class="meta">
-    <dt>Machine</dt><dd>${escapeHtml(machine.hostname)}</dd>
+    <dt>Machine</dt><dd>${escapeHtml(machine.hostname)} (${escapeHtml(loc)})</dd>
+    <dt>Location</dt><dd>${escapeHtml(loc)}</dd>
     <dt>Machine ID</dt><dd>${escapeHtml(selectedMachineId)}</dd>
     <dt>Date range</dt><dd>${escapeHtml(`${dateFrom} to ${dateTo}`)}</dd>
     <dt>Generated</dt><dd>${escapeHtml(new Date().toLocaleString())}</dd>
@@ -515,7 +611,7 @@ export function PcViewer() {
 `;
 
       const html = head + rowsHtml + tail;
-      const filename = `pc-viewer-${machine.hostname}-${dateFrom}_to_${dateTo}.html`;
+      const filename = `pc-viewer-${machine.hostname}-${loc}-${dateFrom}_to_${dateTo}.html`;
       downloadTextFile(filename, html, 'text/html;charset=utf-8');
       toast.success('HTML exported');
     } catch (e) {
@@ -567,8 +663,28 @@ export function PcViewer() {
 
   const selectedCount = useMemo(() => Object.values(selectedObjectKeys).filter(Boolean).length, [selectedObjectKeys]);
 
+  const isNotFoundResult = (r?: CheckResult) => {
+    if (!r) return false;
+    if (r.checkType !== 'REGISTRY_CHECK' && r.checkType !== 'FILE_CHECK') return false;
+    let data: any = r.resultData;
+    if (typeof data === 'string') {
+      const s = data.trim();
+      if (s) {
+        try {
+          data = JSON.parse(s);
+        } catch {
+          // ignore
+        }
+      }
+    }
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
+    const exists = (data as any).exists ?? (data as any).Exists;
+    return exists === false;
+  };
+
   const cellClass = (r?: CheckResult) => {
     if (!r) return 'bg-slate-950';
+    if (isNotFoundResult(r)) return 'bg-red-500/10 text-red-200 border-red-500 ring-2 ring-red-500 ring-inset';
     if (r.status === 'FAILED') return 'bg-red-500/10 text-red-200 border-red-500/20';
     if (r.status === 'WARNING') return 'bg-amber-500/10 text-amber-200 border-amber-500/20';
     return 'bg-emerald-500/10 text-emerald-200 border-emerald-500/20';
@@ -621,7 +737,9 @@ export function PcViewer() {
               </SelectTrigger>
               <SelectContent className="bg-slate-900 border-slate-800">
                 {machines.map((m) => (
-                  <SelectItem key={m.id} value={m.id}>{m.hostname}</SelectItem>
+                  <SelectItem key={m.id} value={m.id}>
+                    {m.hostname} ({m.location?.name || 'Undefined'})
+                  </SelectItem>
                 ))}
               </SelectContent>
             </Select>
@@ -784,7 +902,9 @@ export function PcViewer() {
                         >
                           <button
                             type="button"
-                            className={`w-full rounded border px-1.5 py-1 text-[11px] leading-tight text-left ${cellClass(r)} ${r ? 'hover:brightness-110' : 'border-slate-800 text-slate-600'}`}
+                            className={`w-full px-1.5 py-1 text-[11px] leading-tight text-left ${
+                              isNotFoundResult(r) ? 'rounded-none border-2' : 'rounded border'
+                            } ${cellClass(r)} ${r ? 'hover:brightness-110' : 'border-slate-800 text-slate-600'}`}
                             disabled={!r}
                             title={r ? `${r.status} • ${format(new Date(r.createdAt), 'yyyy-MM-dd HH:mm')}` : ''}
                             onClick={() => r && setSelectedCell(r)}

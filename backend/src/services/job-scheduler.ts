@@ -9,10 +9,13 @@ import {
   getCurrentUser,
   getLastUser,
   getSystemInfo,
+  executePowerShell,
   ConnectionOptions,
+  PowerShellResult,
 } from './powershell-executor.js';
 import { normalizeRegistryPathForStorage, normalizeValueName } from './registry-path.js';
 import { logAuditEvent } from './audit.js';
+import { evaluateFileCheckResult, evaluateRegistryCheckResult, parseResultData } from './check-evaluators.js';
 
 function computePcModelFromSystemInfo(data: any): string | undefined {
   if (!data || typeof data !== 'object') return undefined;
@@ -34,25 +37,6 @@ export const checkQueue = new Bull('health-checks', config.redisUrl, {
     },
   },
 });
-
-function parseResultData(output: string | undefined) {
-  const trimmed = (output ?? '').trim();
-  if (!trimmed) return {};
-
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    const lower = trimmed.toLowerCase();
-    if (lower === 'true') return true;
-    if (lower === 'false') return false;
-
-    const asNumber = Number(trimmed);
-    if (!Number.isNaN(asNumber) && trimmed !== '') return asNumber;
-
-    // Prisma Json can store strings; keep the raw output rather than failing the check.
-    return trimmed;
-  }
-}
 
 // Job processor function
 async function processJob(job: Bull.Job) {
@@ -137,7 +121,7 @@ async function processSingleMachine(machineId: string, jobType: string, checkCon
 
       case 'REGISTRY_CHECK':
         // If no specific registry check was provided, run ALL active registry checks.
-        if (!checkConfig?.registryPath) {
+        if (!checkConfig?.registryPath && !checkConfig?.registryCheckId) {
           const registryChecks = await prisma.registryCheck.findMany({
             where: { isActive: true },
             orderBy: { name: 'asc' },
@@ -148,42 +132,28 @@ async function processSingleMachine(machineId: string, jobType: string, checkCon
           }
 
           let anyFailed = false;
+          let anyWarning = false;
 
           for (const rc of registryChecks) {
             const normalizedPath = normalizeRegistryPathForStorage(rc.registryPath);
             const normalizedValueName = normalizeValueName(rc.valueName);
 
             const r = await getRegistryValue(connection, normalizedPath, normalizedValueName);
-            const data = parseResultData(r.output) as any;
-
-            // Decide status for this registry check
-            let status: 'SUCCESS' | 'FAILED' | 'WARNING' = r.success ? 'SUCCESS' : 'FAILED';
-            let message: string | undefined = r.error;
-
-            const exists = data?.exists;
-            if (exists === false) {
-              status = 'FAILED';
-              message = message || 'Registry path/value not found';
-            }
-
-            if (rc.expectedValue !== null && rc.expectedValue !== undefined) {
-              const actual = data?.value;
-              if (String(actual) !== String(rc.expectedValue)) {
-                status = 'WARNING';
-                message = `Expected "${rc.expectedValue}" but got "${actual}"`;
-              }
-            }
-
-            if (status === 'FAILED') anyFailed = true;
+            const evaluated = evaluateRegistryCheckResult(
+              { registryPath: normalizedPath, valueName: normalizedValueName ?? null, expectedValue: rc.expectedValue ?? null },
+              r
+            );
+            if (evaluated.status === 'FAILED') anyFailed = true;
+            if (evaluated.status === 'WARNING') anyWarning = true;
 
             await prisma.checkResult.create({
               data: {
                 machineId: machine.id,
                 checkType: jobType as any,
                 checkName: rc.name || 'Registry Check',
-                status,
-                resultData: data,
-                message,
+                status: evaluated.status,
+                resultData: evaluated.data,
+                message: evaluated.message,
                 duration: r.duration,
               },
             });
@@ -192,7 +162,7 @@ async function processSingleMachine(machineId: string, jobType: string, checkCon
           await prisma.machine.update({
             where: { id: machine.id },
             data: {
-              status: anyFailed ? 'ERROR' : 'ONLINE',
+              status: anyFailed ? 'ERROR' : anyWarning ? 'WARNING' : 'ONLINE',
               lastSeen: new Date(),
             },
           });
@@ -201,19 +171,66 @@ async function processSingleMachine(machineId: string, jobType: string, checkCon
           return { success: true, machineId, jobType, checksRun: registryChecks.length };
         }
 
+        // Allow single registry check execution by id (preferred by AdHocScan)
+        if (checkConfig?.registryCheckId && !checkConfig?.registryPath) {
+          const rc = await prisma.registryCheck.findUnique({ where: { id: checkConfig.registryCheckId } });
+          if (!rc) throw new Error(`Registry check not found: ${checkConfig.registryCheckId}`);
+          checkConfig = {
+            ...checkConfig,
+            name: rc.name,
+            registryPath: rc.registryPath,
+            valueName: rc.valueName,
+            expectedValue: rc.expectedValue,
+          };
+        }
+
         // Single registry check execution
         result = await getRegistryValue(
           connection,
           normalizeRegistryPathForStorage(checkConfig.registryPath),
           normalizeValueName(checkConfig.valueName)
         );
-        checkName = checkConfig.name || 'Registry Check';
-        break;
+        {
+          const normalizedPath = normalizeRegistryPathForStorage(checkConfig.registryPath);
+          const normalizedValueName = normalizeValueName(checkConfig.valueName);
+          const evaluated = evaluateRegistryCheckResult(
+            {
+              registryPath: normalizedPath,
+              valueName: normalizedValueName ?? null,
+              expectedValue: checkConfig.expectedValue ?? null,
+            },
+            result
+          );
+          checkName = checkConfig.name || 'Registry Check';
+
+          await prisma.checkResult.create({
+            data: {
+              machineId: machine.id,
+              checkType: jobType as any,
+              checkName,
+              status: evaluated.status,
+              resultData: evaluated.data,
+              message: evaluated.message,
+              duration: result.duration,
+            },
+          });
+
+          await prisma.machine.update({
+            where: { id: machine.id },
+            data: {
+              status: evaluated.status === 'FAILED' ? 'ERROR' : evaluated.status === 'WARNING' ? 'WARNING' : 'ONLINE',
+              lastSeen: new Date(),
+            },
+          });
+
+          logger.info(`Completed REGISTRY_CHECK check (${checkName}) for machine ${machine.hostname}`);
+          return { success: true, machineId, jobType, checksRun: 1 };
+        }
 
       case 'FILE_CHECK':
         // If no specific file check was provided, run ALL active file checks.
         // This makes scheduled FILE_CHECK jobs and manual triggers actually useful.
-        if (!checkConfig?.filePath) {
+        if (!checkConfig?.filePath && !checkConfig?.fileCheckId) {
           const fileChecks = await prisma.fileCheck.findMany({
             where: { isActive: true },
             orderBy: { name: 'asc' },
@@ -224,20 +241,223 @@ async function processSingleMachine(machineId: string, jobType: string, checkCon
           }
 
           let anyFailed = false;
+          let anyWarning = false;
 
           for (const fc of fileChecks) {
             const r = await getFileInfo(connection, fc.filePath);
-            if (!r.success) anyFailed = true;
+            const evaluated = evaluateFileCheckResult({ filePath: fc.filePath, checkExists: fc.checkExists }, r);
+            if (evaluated.status === 'FAILED') anyFailed = true;
+            if (evaluated.status === 'WARNING') anyWarning = true;
 
             await prisma.checkResult.create({
               data: {
                 machineId: machine.id,
                 checkType: jobType,
                 checkName: fc.name || 'File Check',
-                status: r.success ? 'SUCCESS' : 'FAILED',
-                resultData: parseResultData(r.output),
-                message: r.error,
+                status: evaluated.status,
+                resultData: evaluated.data,
+                message: evaluated.message,
                 duration: r.duration,
+              },
+            });
+          }
+
+          await prisma.machine.update({
+            where: { id: machine.id },
+            data: {
+              status: anyFailed ? 'ERROR' : anyWarning ? 'WARNING' : 'ONLINE',
+              lastSeen: new Date(),
+            },
+          });
+
+          logger.info(`Completed FILE_CHECK checks (${fileChecks.length}) for machine ${machine.hostname}`);
+          return { success: true, machineId, jobType, checksRun: fileChecks.length };
+        }
+
+        // Allow single file check execution by id (preferred by AdHocScan)
+        if (checkConfig?.fileCheckId && !checkConfig?.filePath) {
+          const fc = await prisma.fileCheck.findUnique({ where: { id: checkConfig.fileCheckId } });
+          if (!fc) throw new Error(`File check not found: ${checkConfig.fileCheckId}`);
+          checkConfig = {
+            ...checkConfig,
+            name: fc.name,
+            filePath: fc.filePath,
+            checkExists: fc.checkExists,
+          };
+        }
+
+        result = await getFileInfo(connection, checkConfig.filePath);
+        {
+          const evaluated = evaluateFileCheckResult(
+            { filePath: checkConfig.filePath, checkExists: checkConfig.checkExists },
+            result
+          );
+          checkName = checkConfig.name || 'File Check';
+
+          await prisma.checkResult.create({
+            data: {
+              machineId: machine.id,
+              checkType: jobType as any,
+              checkName,
+              status: evaluated.status,
+              resultData: evaluated.data,
+              message: evaluated.message,
+              duration: result.duration,
+            },
+          });
+
+          await prisma.machine.update({
+            where: { id: machine.id },
+            data: {
+              status: evaluated.status === 'FAILED' ? 'ERROR' : evaluated.status === 'WARNING' ? 'WARNING' : 'ONLINE',
+              lastSeen: new Date(),
+            },
+          });
+
+          logger.info(`Completed FILE_CHECK check (${checkName}) for machine ${machine.hostname}`);
+          return { success: true, machineId, jobType, checksRun: 1 };
+        }
+
+      case 'USER_INFO':
+        // Allow single configured user check execution by id (preferred by AdHocScan)
+        if (checkConfig?.userCheckId) {
+          const uc = await prisma.userCheck.findUnique({ where: { id: checkConfig.userCheckId } });
+          if (!uc) throw new Error(`User check not found: ${checkConfig.userCheckId}`);
+
+          let userResult: PowerShellResult;
+          if (uc.checkType === 'CURRENT_AND_LAST') {
+            const currentUser = await getCurrentUser(connection);
+            const lastUser = await getLastUser(connection);
+            userResult = {
+              success: currentUser.success && lastUser.success,
+              output: JSON.stringify({
+                currentUser: currentUser.output,
+                lastUser: lastUser.output,
+              }),
+              duration: currentUser.duration + lastUser.duration,
+            };
+          } else if (uc.checkType === 'CURRENT_ONLY') {
+            const currentUser = await getCurrentUser(connection);
+            userResult = {
+              success: currentUser.success,
+              output: JSON.stringify({ currentUser: currentUser.output }),
+              duration: currentUser.duration,
+            };
+          } else if (uc.checkType === 'LAST_ONLY') {
+            const lastUser = await getLastUser(connection);
+            userResult = {
+              success: lastUser.success,
+              output: JSON.stringify({ lastUser: lastUser.output }),
+              duration: lastUser.duration,
+            };
+          } else if (uc.checkType === 'CUSTOM' && uc.customScript) {
+            userResult = await executePowerShell(uc.customScript, connection);
+          } else {
+            // Default to CURRENT_AND_LAST
+            const currentUser = await getCurrentUser(connection);
+            const lastUser = await getLastUser(connection);
+            userResult = {
+              success: currentUser.success && lastUser.success,
+              output: JSON.stringify({
+                currentUser: currentUser.output,
+                lastUser: lastUser.output,
+              }),
+              duration: currentUser.duration + lastUser.duration,
+            };
+          }
+
+          await prisma.checkResult.create({
+            data: {
+              machineId: machine.id,
+              checkType: jobType,
+              checkName: uc.name,
+              status: userResult.success ? 'SUCCESS' : 'FAILED',
+              resultData: parseResultData(userResult.output),
+              message: userResult.error,
+              duration: userResult.duration,
+            },
+          });
+
+          await prisma.machine.update({
+            where: { id: machine.id },
+            data: {
+              status: userResult.success ? 'ONLINE' : 'ERROR',
+              lastSeen: new Date(),
+            },
+          });
+
+          logger.info(`Completed USER_INFO check (${uc.name}) for machine ${machine.hostname}`);
+          return { success: true, machineId, jobType, checksRun: 1 };
+        }
+
+        // If no specific check config, run all active user checks
+        if (!checkConfig) {
+          const userChecks = await prisma.userCheck.findMany({
+            where: { isActive: true },
+            orderBy: { name: 'asc' },
+          });
+
+          if (userChecks.length === 0) {
+            throw new Error('No active user checks configured');
+          }
+
+          let anyFailed = false;
+
+          for (const uc of userChecks) {
+            let userResult: PowerShellResult;
+            
+            if (uc.checkType === 'CURRENT_AND_LAST') {
+              const currentUser = await getCurrentUser(connection);
+              const lastUser = await getLastUser(connection);
+              userResult = {
+                success: currentUser.success && lastUser.success,
+                output: JSON.stringify({
+                  currentUser: currentUser.output,
+                  lastUser: lastUser.output,
+                }),
+                duration: currentUser.duration + lastUser.duration,
+              };
+            } else if (uc.checkType === 'CURRENT_ONLY') {
+              const currentUser = await getCurrentUser(connection);
+              userResult = {
+                success: currentUser.success,
+                output: JSON.stringify({ currentUser: currentUser.output }),
+                duration: currentUser.duration,
+              };
+            } else if (uc.checkType === 'LAST_ONLY') {
+              const lastUser = await getLastUser(connection);
+              userResult = {
+                success: lastUser.success,
+                output: JSON.stringify({ lastUser: lastUser.output }),
+                duration: lastUser.duration,
+              };
+            } else if (uc.checkType === 'CUSTOM' && uc.customScript) {
+              userResult = await executePowerShell(uc.customScript, connection);
+            } else {
+              // Default to CURRENT_AND_LAST
+              const currentUser = await getCurrentUser(connection);
+              const lastUser = await getLastUser(connection);
+              userResult = {
+                success: currentUser.success && lastUser.success,
+                output: JSON.stringify({
+                  currentUser: currentUser.output,
+                  lastUser: lastUser.output,
+                }),
+                duration: currentUser.duration + lastUser.duration,
+              };
+            }
+
+            if (!userResult.success) anyFailed = true;
+
+            await prisma.checkResult.create({
+              data: {
+                machineId: machine.id,
+                checkType: jobType,
+                checkName: uc.name,
+                status: userResult.success ? 'SUCCESS' : 'FAILED',
+                resultData: parseResultData(userResult.output),
+                message: userResult.error,
+                duration: userResult.duration,
               },
             });
           }
@@ -250,15 +470,11 @@ async function processSingleMachine(machineId: string, jobType: string, checkCon
             },
           });
 
-          logger.info(`Completed FILE_CHECK checks (${fileChecks.length}) for machine ${machine.hostname}`);
-          return { success: true, machineId, jobType, checksRun: fileChecks.length };
+          logger.info(`Completed USER_INFO checks (${userChecks.length}) for machine ${machine.hostname}`);
+          return { success: true, machineId, jobType, checksRun: userChecks.length };
         }
 
-        result = await getFileInfo(connection, checkConfig.filePath);
-        checkName = checkConfig.name || 'File Check';
-        break;
-
-      case 'USER_INFO':
+        // Single check with config (backward compatibility)
         const currentUser = await getCurrentUser(connection);
         const lastUser = await getLastUser(connection);
         result = {
@@ -273,6 +489,108 @@ async function processSingleMachine(machineId: string, jobType: string, checkCon
         break;
 
       case 'SYSTEM_INFO':
+        // Allow single configured system check execution by id (preferred by AdHocScan)
+        if (checkConfig?.systemCheckId) {
+          const sc = await prisma.systemCheck.findUnique({ where: { id: checkConfig.systemCheckId } });
+          if (!sc) throw new Error(`System check not found: ${checkConfig.systemCheckId}`);
+
+          let sysResult: PowerShellResult;
+          if (sc.checkType === 'SYSTEM_INFO') {
+            sysResult = await getSystemInfo(connection);
+            const sysData = parseResultData(sysResult.output);
+            newPcModel = computePcModelFromSystemInfo(sysData);
+          } else if (sc.checkType === 'CUSTOM' && sc.customScript) {
+            sysResult = await executePowerShell(sc.customScript, connection);
+          } else {
+            // Default to SYSTEM_INFO
+            sysResult = await getSystemInfo(connection);
+            const sysData = parseResultData(sysResult.output);
+            newPcModel = computePcModelFromSystemInfo(sysData);
+          }
+
+          await prisma.checkResult.create({
+            data: {
+              machineId: machine.id,
+              checkType: jobType,
+              checkName: sc.name,
+              status: sysResult.success ? 'SUCCESS' : 'FAILED',
+              resultData: parseResultData(sysResult.output),
+              message: sysResult.error,
+              duration: sysResult.duration,
+            },
+          });
+
+          await prisma.machine.update({
+            where: { id: machine.id },
+            data: {
+              status: sysResult.success ? 'ONLINE' : 'ERROR',
+              lastSeen: new Date(),
+              ...(newPcModel ? { pcModel: newPcModel } : {}),
+            },
+          });
+
+          logger.info(`Completed SYSTEM_INFO check (${sc.name}) for machine ${machine.hostname}`);
+          return { success: true, machineId, jobType, checksRun: 1 };
+        }
+
+        // If no specific check config, run all active system checks
+        if (!checkConfig) {
+          const systemChecks = await prisma.systemCheck.findMany({
+            where: { isActive: true },
+            orderBy: { name: 'asc' },
+          });
+
+          if (systemChecks.length === 0) {
+            throw new Error('No active system checks configured');
+          }
+
+          let anyFailed = false;
+
+          for (const sc of systemChecks) {
+            let sysResult: PowerShellResult;
+            
+            if (sc.checkType === 'SYSTEM_INFO') {
+              sysResult = await getSystemInfo(connection);
+              const sysData = parseResultData(sysResult.output);
+              newPcModel = computePcModelFromSystemInfo(sysData);
+            } else if (sc.checkType === 'CUSTOM' && sc.customScript) {
+              sysResult = await executePowerShell(sc.customScript, connection);
+            } else {
+              // Default to SYSTEM_INFO
+              sysResult = await getSystemInfo(connection);
+              const sysData = parseResultData(sysResult.output);
+              newPcModel = computePcModelFromSystemInfo(sysData);
+            }
+
+            if (!sysResult.success) anyFailed = true;
+
+            await prisma.checkResult.create({
+              data: {
+                machineId: machine.id,
+                checkType: jobType,
+                checkName: sc.name,
+                status: sysResult.success ? 'SUCCESS' : 'FAILED',
+                resultData: parseResultData(sysResult.output),
+                message: sysResult.error,
+                duration: sysResult.duration,
+              },
+            });
+          }
+
+          await prisma.machine.update({
+            where: { id: machine.id },
+            data: {
+              status: anyFailed ? 'ERROR' : 'ONLINE',
+              lastSeen: new Date(),
+              ...(newPcModel && { pcModel: newPcModel }),
+            },
+          });
+
+          logger.info(`Completed SYSTEM_INFO checks (${systemChecks.length}) for machine ${machine.hostname}`);
+          return { success: true, machineId, jobType, checksRun: systemChecks.length };
+        }
+
+        // Single check with config (backward compatibility)
         result = await getSystemInfo(connection);
         checkName = 'System Information';
         newPcModel = computePcModelFromSystemInfo(parseResultData(result.output));
@@ -283,6 +601,7 @@ async function processSingleMachine(machineId: string, jobType: string, checkCon
         // Store each result as its native checkType so the UI filters work as expected.
         {
           let anyFailed = false;
+          let anyWarning = false;
 
           const ping = await pingMachine(connection);
           if (!ping.success) anyFailed = true;
@@ -344,32 +663,25 @@ async function processSingleMachine(machineId: string, jobType: string, checkCon
               normalizeRegistryPathForStorage(rc.registryPath),
               normalizeValueName(rc.valueName)
             );
-            const data = parseResultData(r.output) as any;
-
-            let status: 'SUCCESS' | 'FAILED' | 'WARNING' = r.success ? 'SUCCESS' : 'FAILED';
-            let message: string | undefined = r.error;
-
-            if (data?.exists === false) {
-              status = 'FAILED';
-              message = message || 'Registry path/value not found';
-            }
-            if (rc.expectedValue !== null && rc.expectedValue !== undefined) {
-              const actual = data?.value;
-              if (String(actual) !== String(rc.expectedValue)) {
-                status = 'WARNING';
-                message = `Expected "${rc.expectedValue}" but got "${actual}"`;
-              }
-            }
-            if (status === 'FAILED') anyFailed = true;
+            const evaluated = evaluateRegistryCheckResult(
+              {
+                registryPath: normalizeRegistryPathForStorage(rc.registryPath),
+                valueName: normalizeValueName(rc.valueName) ?? null,
+                expectedValue: rc.expectedValue ?? null,
+              },
+              r
+            );
+            if (evaluated.status === 'FAILED') anyFailed = true;
+            if (evaluated.status === 'WARNING') anyWarning = true;
 
             await prisma.checkResult.create({
               data: {
                 machineId: machine.id,
                 checkType: 'REGISTRY_CHECK',
                 checkName: rc.name || 'Registry Check',
-                status,
-                resultData: data,
-                message,
+                status: evaluated.status,
+                resultData: evaluated.data,
+                message: evaluated.message,
                 duration: r.duration,
               },
             });
@@ -382,15 +694,17 @@ async function processSingleMachine(machineId: string, jobType: string, checkCon
           });
           for (const fc of fileChecks) {
             const r = await getFileInfo(connection, fc.filePath);
-            if (!r.success) anyFailed = true;
+            const evaluated = evaluateFileCheckResult({ filePath: fc.filePath, checkExists: fc.checkExists }, r);
+            if (evaluated.status === 'FAILED') anyFailed = true;
+            if (evaluated.status === 'WARNING') anyWarning = true;
             await prisma.checkResult.create({
               data: {
                 machineId: machine.id,
                 checkType: 'FILE_CHECK',
                 checkName: fc.name || 'File Check',
-                status: r.success ? 'SUCCESS' : 'FAILED',
-                resultData: parseResultData(r.output),
-                message: r.error,
+                status: evaluated.status,
+                resultData: evaluated.data,
+                message: evaluated.message,
                 duration: r.duration,
               },
             });
@@ -399,7 +713,7 @@ async function processSingleMachine(machineId: string, jobType: string, checkCon
           await prisma.machine.update({
             where: { id: machine.id },
             data: {
-              status: anyFailed ? 'ERROR' : 'ONLINE',
+              status: anyFailed ? 'ERROR' : anyWarning ? 'WARNING' : 'ONLINE',
               lastSeen: new Date(),
               ...(fullCheckPcModel ? { pcModel: fullCheckPcModel } : {}),
             },

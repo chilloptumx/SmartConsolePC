@@ -14,37 +14,77 @@ export function DataViewer() {
   const [checkResults, setCheckResults] = useState<any[]>([]);
   const [filteredResults, setFilteredResults] = useState<any[]>([]);
   const [machines, setMachines] = useState<any[]>([]);
+  const [users, setUsers] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedResult, setSelectedResult] = useState<any>(null);
+
+  // Pagination (server-side)
+  const [page, setPage] = useState<number>(1);
+  const [pageSize, setPageSize] = useState<number>(50);
+  const [pagination, setPagination] = useState<{ page: number; limit: number; total: number; totalPages: number }>({
+    page: 1,
+    limit: 50,
+    total: 0,
+    totalPages: 0,
+  });
   
   // Filter state
   const [searchTerm, setSearchTerm] = useState('');
   const [filterMachine, setFilterMachine] = useState('all');
   const [filterType, setFilterType] = useState('all');
   const [filterStatus, setFilterStatus] = useState('all');
+  const [filterUser, setFilterUser] = useState('all');
+  const [filterUserMode, setFilterUserMode] = useState<'current' | 'last' | 'either'>('current');
 
   useEffect(() => {
     loadData();
-    // Refresh every 30 seconds
+    // Refresh every 30 seconds (keeps current filters/paging)
     const interval = setInterval(loadData, 30000);
     return () => clearInterval(interval);
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterMachine, filterType, filterStatus, filterUser, filterUserMode, page, pageSize]);
 
   useEffect(() => {
     applyFilters();
-  }, [checkResults, searchTerm, filterMachine, filterType, filterStatus]);
+  }, [checkResults, searchTerm]);
 
   const loadData = async () => {
     try {
       setLoading(true);
-      const [resultsResponse, machinesData] = await Promise.all([
-        api.getCheckResults(),
-        api.getMachines()
+      const params: Record<string, any> = {
+        page,
+        limit: pageSize,
+        sortBy: 'createdAt',
+        sortOrder: 'desc',
+      };
+      if (filterMachine !== 'all') params.machineId = filterMachine;
+      if (filterType !== 'all') params.checkType = filterType;
+      if (filterStatus !== 'all') params.status = filterStatus;
+      if (filterUser !== 'all') params.loggedInUser = filterUser;
+      if (filterUser !== 'all') params.loggedInUserMode = filterUserMode;
+
+      const usersModeParam = filterUserMode === 'either' ? 'both' : filterUserMode;
+      const [resultsResponse, machinesData, usersData] = await Promise.all([
+        api.getResults(params),
+        api.getMachines(),
+        api.getUserInfoUsers({ mode: usersModeParam }).catch(() => []),
       ]);
-      // Handle both array and {results, pagination} response formats
-      const results = Array.isArray(resultsResponse) ? resultsResponse : resultsResponse.results || [];
+
+      const results = resultsResponse?.results || [];
       setCheckResults(results);
+      if (resultsResponse?.pagination) {
+        setPagination(resultsResponse.pagination);
+      } else {
+        // Fallback (shouldn't happen with current backend)
+        setPagination({
+          page,
+          limit: pageSize,
+          total: results.length,
+          totalPages: 1,
+        });
+      }
       setMachines(machinesData);
+      setUsers(usersData || []);
     } catch (error) {
       console.error('Failed to load data:', error);
       toast.error('Failed to load check results');
@@ -54,32 +94,19 @@ export function DataViewer() {
   };
 
   const applyFilters = () => {
-    let filtered = [...checkResults];
-
-    // Search filter
-    if (searchTerm) {
-      filtered = filtered.filter(result =>
-        result.machine?.hostname?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        result.checkName?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        result.checkType?.toLowerCase().includes(searchTerm.toLowerCase())
-      );
+    // Machine/type/status filters are now server-side. Keep search as a client-side filter on the current page.
+    if (!searchTerm) {
+      setFilteredResults(checkResults);
+      return;
     }
 
-    // Machine filter
-    if (filterMachine !== 'all') {
-      filtered = filtered.filter(result => result.machineId === filterMachine);
-    }
-
-    // Type filter
-    if (filterType !== 'all') {
-      filtered = filtered.filter(result => result.checkType === filterType);
-    }
-
-    // Status filter
-    if (filterStatus !== 'all') {
-      filtered = filtered.filter(result => result.status === filterStatus);
-    }
-
+    const q = searchTerm.toLowerCase();
+    const filtered = checkResults.filter((result) => {
+      const host = String(result.machine?.hostname || '').toLowerCase();
+      const name = String(result.checkName || '').toLowerCase();
+      const type = String(result.checkType || '').toLowerCase();
+      return host.includes(q) || name.includes(q) || type.includes(q);
+    });
     setFilteredResults(filtered);
   };
 
@@ -147,6 +174,64 @@ export function DataViewer() {
 
     const data = result?.resultData;
     if (data && typeof data === 'object' && !Array.isArray(data)) {
+      // USER_INFO: show current/last user instead of generic "2 fields"
+      if (result.checkType === 'USER_INFO') {
+        const parseMaybe = (v: any) => {
+          if (v === null || v === undefined) return null;
+          if (typeof v === 'object') return v;
+          if (typeof v !== 'string') return v;
+          const s = v.trim();
+          if (!s) return null;
+          try {
+            return JSON.parse(s);
+          } catch {
+            return v;
+          }
+        };
+
+        const currentRaw = (data as any).currentUser ?? (data as any).current_user;
+        const lastRaw = (data as any).lastUser ?? (data as any).last_user;
+        const current = parseMaybe(currentRaw);
+        const last = parseMaybe(lastRaw);
+
+        const pickCurrentUsername = () => {
+          if (Array.isArray(current)) {
+            const active = current.find((r: any) => String(r?.State ?? r?.state ?? '').toLowerCase() === 'active');
+            const row = active ?? current[0];
+            return row?.Username ?? row?.username ?? null;
+          }
+          if (current && typeof current === 'object') {
+            if ((current as any).NoUserLoggedIn) return null;
+            return (current as any).Username ?? (current as any).username ?? null;
+          }
+          if (typeof current === 'string') {
+            const s = current.trim();
+            return s && s.toLowerCase() !== 'unknown' ? s : null;
+          }
+          return null;
+        };
+
+        const pickLastUser = () => {
+          if (last && typeof last === 'object' && !Array.isArray(last)) {
+            const u = (last as any).LastUser ?? (last as any).lastUser ?? (last as any).last_user;
+            return u ? String(u) : null;
+          }
+          if (typeof last === 'string') {
+            const s = last.trim();
+            return s && s.toLowerCase() !== 'unknown' ? s : null;
+          }
+          return null;
+        };
+
+        const cur = pickCurrentUsername();
+        const lu = pickLastUser();
+
+        const parts: string[] = [];
+        if (cur) parts.push(`current=${String(cur)}`);
+        if (lu) parts.push(`last=${String(lu)}`);
+        return parts.length ? parts.join(' · ') : 'no user';
+      }
+
       // Normalize common fields (older data used different casing/keys).
       const exists = (data.exists ?? data.Exists) as boolean | undefined;
       const path = (data.path ?? data.FullPath ?? data.fullPath) as string | undefined;
@@ -193,8 +278,46 @@ export function DataViewer() {
         return parts.join(' · ');
       }
 
-      if (result.checkType === 'PING' && (data.reachable !== undefined)) {
-        return `reachable=${String(data.reachable)}`;
+      if (result.checkType === 'PING') {
+        const reachable = (data.reachable ?? (data as any).Reachable) as any;
+        const ok =
+          result.status === 'SUCCESS' ||
+          reachable === true ||
+          (data as any).success === true;
+
+        const ms =
+          (typeof (result as any).duration === 'number' && Number.isFinite((result as any).duration) && (result as any).duration >= 0)
+            ? (result as any).duration
+            : (typeof (data as any).responseTime === 'number' && Number.isFinite((data as any).responseTime))
+              ? (data as any).responseTime
+              : (typeof (data as any).avgResponseTime === 'number' && Number.isFinite((data as any).avgResponseTime))
+                ? (data as any).avgResponseTime
+                : null;
+
+        return ms !== null ? `${ok ? 'success' : 'failed'} (${ms}ms)` : (ok ? 'success' : 'failed');
+      }
+
+      if (result.checkType === 'SYSTEM_INFO') {
+        const computerName = data.ComputerName ?? data.computerName;
+        const manufacturer = data.Manufacturer ?? data.manufacturer;
+        const model = data.Model ?? data.model;
+        const totalMemoryGB = data.TotalMemoryGB ?? data.totalMemoryGB;
+        const osVersion = data.OSVersion ?? data.osVersion;
+        const osArch = data.OSArchitecture ?? data.osArchitecture;
+        const uptimeDays = data.UptimeDays ?? data.uptimeDays;
+        
+        const parts: string[] = [];
+        if (computerName) parts.push(`${computerName}`);
+        if (manufacturer || model) {
+          const hw = [manufacturer, model].filter(Boolean).join(' ');
+          if (hw) parts.push(hw);
+        }
+        if (totalMemoryGB !== undefined) parts.push(`${totalMemoryGB}GB RAM`);
+        if (osVersion) parts.push(`${osVersion}`);
+        if (osArch) parts.push(`${osArch}`);
+        if (uptimeDays !== undefined) parts.push(`uptime ${uptimeDays}d`);
+        
+        return parts.length > 0 ? parts.join(' · ') : 'system info';
       }
 
       // Generic object fallback
@@ -205,8 +328,28 @@ export function DataViewer() {
     return data ?? '';
   };
 
+  const isNotFoundResult = (result: any) => {
+    if (!result) return false;
+    if (result.checkType !== 'REGISTRY_CHECK' && result.checkType !== 'FILE_CHECK') return false;
+    let data: any = result.resultData;
+    if (typeof data === 'string') {
+      const s = data.trim();
+      if (s) {
+        try {
+          data = JSON.parse(s);
+        } catch {
+          // ignore
+        }
+      }
+    }
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
+    const exists = (data as any).exists ?? (data as any).Exists;
+    return exists === false;
+  };
+
   return (
-    <div className="p-8">
+    // Extra bottom padding so the pagination controls never get clipped by the bottom of the scroll container.
+    <div className="p-8 pb-24">
       {/* Header */}
       <div className="flex items-center justify-between mb-8">
         <div>
@@ -229,7 +372,7 @@ export function DataViewer() {
           <Filter className="w-4 h-4" />
           Filters
         </h3>
-        <div className="grid grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
           <div>
             <Label className="text-slate-300 text-sm">Search</Label>
             <div className="relative">
@@ -244,21 +387,35 @@ export function DataViewer() {
           </div>
           <div>
             <Label className="text-slate-300 text-sm">Machine</Label>
-            <Select value={filterMachine} onValueChange={setFilterMachine}>
+            <Select
+              value={filterMachine}
+              onValueChange={(v) => {
+                setFilterMachine(v);
+                setPage(1);
+              }}
+            >
               <SelectTrigger className="bg-slate-950 border-slate-800">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent className="bg-slate-900 border-slate-800">
                 <SelectItem value="all">All Machines</SelectItem>
                 {machines.map(machine => (
-                  <SelectItem key={machine.id} value={machine.id}>{machine.hostname}</SelectItem>
+                  <SelectItem key={machine.id} value={machine.id}>
+                    {machine.hostname} ({machine.location?.name || 'Undefined'})
+                  </SelectItem>
                 ))}
               </SelectContent>
             </Select>
           </div>
           <div>
             <Label className="text-slate-300 text-sm">Check Type</Label>
-            <Select value={filterType} onValueChange={setFilterType}>
+            <Select
+              value={filterType}
+              onValueChange={(v) => {
+                setFilterType(v);
+                setPage(1);
+              }}
+            >
               <SelectTrigger className="bg-slate-950 border-slate-800">
                 <SelectValue />
               </SelectTrigger>
@@ -274,7 +431,13 @@ export function DataViewer() {
           </div>
           <div>
             <Label className="text-slate-300 text-sm">Status</Label>
-            <Select value={filterStatus} onValueChange={setFilterStatus}>
+            <Select
+              value={filterStatus}
+              onValueChange={(v) => {
+                setFilterStatus(v);
+                setPage(1);
+              }}
+            >
               <SelectTrigger className="bg-slate-950 border-slate-800">
                 <SelectValue />
               </SelectTrigger>
@@ -286,8 +449,62 @@ export function DataViewer() {
               </SelectContent>
             </Select>
           </div>
+          <div>
+            <Label className="text-slate-300 text-sm">User</Label>
+            <Select
+              value={filterUser}
+              onValueChange={(v) => {
+                setFilterUser(v);
+                setPage(1);
+              }}
+            >
+              <SelectTrigger className="bg-slate-950 border-slate-800">
+                <SelectValue placeholder="All Users" />
+              </SelectTrigger>
+              <SelectContent className="bg-slate-900 border-slate-800">
+                <SelectItem value="all">All Users</SelectItem>
+                {users.length === 0 ? (
+                  <SelectItem value="__none" disabled>
+                    No users found
+                  </SelectItem>
+                ) : (
+                  users.map((u) => (
+                    <SelectItem key={u} value={u}>
+                      {u}
+                    </SelectItem>
+                  ))
+                )}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label className="text-slate-300 text-sm">User Field</Label>
+            <Select
+              value={filterUserMode}
+              onValueChange={(v) => {
+                const mode = (v as any) as 'current' | 'last' | 'either';
+                setFilterUserMode(mode);
+                setFilterUser('all');
+                setPage(1);
+              }}
+            >
+              <SelectTrigger className="bg-slate-950 border-slate-800">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="bg-slate-900 border-slate-800">
+                <SelectItem value="current">Current</SelectItem>
+                <SelectItem value="last">Last</SelectItem>
+                <SelectItem value="either">Either</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
         </div>
-        {(searchTerm || filterMachine !== 'all' || filterType !== 'all' || filterStatus !== 'all') && (
+        {(searchTerm ||
+          filterMachine !== 'all' ||
+          filterType !== 'all' ||
+          filterStatus !== 'all' ||
+          filterUser !== 'all' ||
+          filterUserMode !== 'current') && (
           <div className="mt-4">
             <Button 
               variant="outline" 
@@ -297,6 +514,9 @@ export function DataViewer() {
                 setFilterMachine('all');
                 setFilterType('all');
                 setFilterStatus('all');
+                setFilterUser('all');
+                setFilterUserMode('current');
+                setPage(1);
               }}
               className="border-slate-700"
             >
@@ -338,7 +558,7 @@ export function DataViewer() {
                       {new Date(result.createdAt).toLocaleString()}
                     </td>
                     <td className="p-4 font-mono text-sm text-slate-300">
-                      {result.machine?.hostname || 'Unknown'}
+                      {result.machine?.hostname || 'Unknown'} ({result.machine?.location?.name || 'Undefined'})
                     </td>
                     <td className="p-4 text-sm">
                       <span className="px-2 py-1 bg-slate-800 rounded text-xs text-slate-300">
@@ -350,10 +570,23 @@ export function DataViewer() {
                         {result.status}
                       </StatusBadge>
                     </td>
-                    <td className="p-4 text-sm text-slate-300">
-                      <span className={result.message ? 'text-amber-300' : 'text-slate-300'}>
-                        {renderResultSummary(result) || <span className="text-slate-500">-</span>}
-                      </span>
+                    <td
+                      className={`p-4 text-sm ${
+                        isNotFoundResult(result)
+                          ? 'bg-red-500/10 text-red-200 ring-2 ring-red-500 ring-inset'
+                          : 'text-slate-300'
+                      }`}
+                    >
+                      {(() => {
+                        const notFound = isNotFoundResult(result);
+                        const textClass = notFound ? 'text-red-200' : result.message ? 'text-amber-300' : 'text-slate-300';
+                        const boxClass = notFound ? 'inline-block w-full px-2 py-1 rounded-none' : '';
+                        return (
+                          <span className={`${textClass} ${boxClass}`}>
+                            {renderResultSummary(result) || <span className="text-slate-500">-</span>}
+                          </span>
+                        );
+                      })()}
                     </td>
                     <td className="p-4 text-right">
                       <Button
@@ -373,9 +606,74 @@ export function DataViewer() {
         </div>
 
         {/* Results count */}
-        {!loading && filteredResults.length > 0 && (
-          <div className="p-4 border-t border-slate-800 text-sm text-slate-400">
-            Showing {filteredResults.length} of {checkResults.length} results
+        {!loading && (
+          <div className="sticky bottom-0 z-10 p-4 border-t border-slate-800 bg-slate-900/95 backdrop-blur text-sm text-slate-400 flex items-center justify-between gap-4 flex-wrap">
+            <div>
+              {(() => {
+                const total = pagination.total || 0;
+                if (total <= 0) return <span>Showing 0 results</span>;
+                const from = (pagination.page - 1) * pagination.limit + 1;
+                const to = Math.min((pagination.page - 1) * pagination.limit + checkResults.length, total);
+                if (searchTerm) {
+                  return (
+                    <span>
+                      Showing {filteredResults.length} matching on this page (rows {from}-{to} of {total})
+                    </span>
+                  );
+                }
+                return (
+                  <span>
+                    Showing {from}-{to} of {total}
+                  </span>
+                );
+              })()}
+            </div>
+
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-slate-500">Per page</span>
+                <Select
+                  value={String(pageSize)}
+                  onValueChange={(v) => {
+                    const next = parseInt(v, 10);
+                    setPageSize(next);
+                    setPage(1);
+                  }}
+                >
+                  <SelectTrigger className="h-8 w-[90px] bg-slate-950 border-slate-800">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="bg-slate-900 border-slate-800">
+                    <SelectItem value="50">50</SelectItem>
+                    <SelectItem value="100">100</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="border-slate-700 bg-slate-950 hover:bg-slate-900"
+                  disabled={page <= 1}
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                >
+                  Prev
+                </Button>
+                <span className="text-xs text-slate-500">
+                  Page {pagination.page} of {Math.max(1, pagination.totalPages)}
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="border-slate-700 bg-slate-950 hover:bg-slate-900"
+                  disabled={pagination.totalPages === 0 || page >= pagination.totalPages}
+                  onClick={() => setPage((p) => Math.min(pagination.totalPages || p + 1, p + 1))}
+                >
+                  Next
+                </Button>
+              </div>
+            </div>
           </div>
         )}
       </Card>

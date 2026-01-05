@@ -1,6 +1,7 @@
 import { spawn } from 'child_process';
 import { config } from '../config.js';
 import { logger } from './logger.js';
+import { prisma } from './database.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { escapePsSingleQuotedString, normalizeValueName, toPowerShellRegistryPath } from './registry-path.js';
@@ -23,6 +24,112 @@ export interface ConnectionOptions {
   useSSH?: boolean; // Not used, kept for compatibility
 }
 
+type WinRmTransport = 'ntlm' | 'kerberos' | 'credssp';
+
+type EffectiveAuth = {
+  source: 'connection' | 'db' | 'env';
+  username: string;
+  password: string;
+  transport: WinRmTransport;
+  useHttps: boolean;
+  port: number;
+};
+
+const AUTH_CACHE_TTL_MS = 5000;
+let authCache:
+  | {
+      fetchedAt: number;
+      enabled: boolean;
+      username: string;
+      password: string;
+      transport: WinRmTransport;
+      useHttps: boolean;
+      port: number;
+    }
+  | null = null;
+
+async function getCachedDbAuthSettings() {
+  const now = Date.now();
+  if (authCache && now - authCache.fetchedAt < AUTH_CACHE_TTL_MS) return authCache;
+
+  const keys = [
+    'scanAuth.enabled',
+    'scanAuth.username',
+    'scanAuth.password',
+    'scanAuth.transport',
+    'scanAuth.useHttps',
+    'scanAuth.port',
+  ];
+
+  const rows = await prisma.appSettings.findMany({
+    where: { key: { in: keys } },
+  });
+
+  const map = rows.reduce((acc, r) => {
+    acc[r.key] = r.value;
+    return acc;
+  }, {} as Record<string, string>);
+
+  const enabled = (map['scanAuth.enabled'] ?? '').toLowerCase() === 'true';
+  const username = map['scanAuth.username'] ?? '';
+  const password = map['scanAuth.password'] ?? '';
+
+  const rawTransport = (map['scanAuth.transport'] ?? 'ntlm').toLowerCase();
+  const transport: WinRmTransport =
+    rawTransport === 'kerberos' ? 'kerberos' : rawTransport === 'credssp' ? 'credssp' : 'ntlm';
+
+  const useHttps = (map['scanAuth.useHttps'] ?? '').toLowerCase() === 'true';
+  const portRaw = parseInt(map['scanAuth.port'] ?? '', 10);
+  const port = Number.isFinite(portRaw) && portRaw > 0 ? portRaw : useHttps ? 5986 : 5985;
+
+  authCache = {
+    fetchedAt: now,
+    enabled,
+    username,
+    password,
+    transport,
+    useHttps,
+    port,
+  };
+
+  return authCache;
+}
+
+async function getEffectiveAuth(connection: ConnectionOptions): Promise<EffectiveAuth> {
+  // Per-call overrides take precedence (not currently exposed in UI, but useful for future per-machine creds).
+  if (connection.username || connection.password) {
+    return {
+      source: 'connection',
+      username: connection.username || config.windows.adminUser,
+      password: connection.password || config.windows.adminPassword,
+      transport: 'ntlm',
+      useHttps: false,
+      port: 5985,
+    };
+  }
+
+  const db = await getCachedDbAuthSettings();
+  if (db.enabled && db.username) {
+    return {
+      source: 'db',
+      username: db.username,
+      password: db.password,
+      transport: db.transport,
+      useHttps: db.useHttps,
+      port: db.port,
+    };
+  }
+
+  return {
+    source: 'env',
+    username: config.windows.adminUser,
+    password: config.windows.adminPassword,
+    transport: 'ntlm',
+    useHttps: false,
+    port: 5985,
+  };
+}
+
 /**
  * Execute PowerShell command on remote Windows machine using WinRM via Python
  * This works from Linux Docker containers to Windows machines
@@ -32,10 +139,13 @@ export async function executePowerShell(
   connection: ConnectionOptions
 ): Promise<PowerShellResult> {
   const startTime = Date.now();
-  const username = connection.username || config.windows.adminUser;
-  const password = connection.password || config.windows.adminPassword;
+  const auth = await getEffectiveAuth(connection);
+  const username = auth.username;
+  const password = auth.password;
 
-  logger.info(`Executing PowerShell on ${connection.hostname} (${connection.ipAddress}) via WinRM`);
+  logger.info(
+    `Executing PowerShell on ${connection.hostname} (${connection.ipAddress}) via WinRM (auth=${auth.source}, transport=${auth.transport}, https=${auth.useHttps}, port=${auth.port})`
+  );
 
   return new Promise((resolve) => {
     // Path to Python WinRM script
@@ -47,7 +157,12 @@ export async function executePowerShell(
       connection.ipAddress,
       username,
       password,
-      command
+      command,
+      '--transport',
+      auth.transport,
+      '--port',
+      String(auth.port),
+      ...(auth.useHttps ? ['--use-https', '--server-cert-validation', 'ignore'] : []),
     ], {
       timeout: config.windows.connectionTimeout,
     });
@@ -228,16 +343,19 @@ export async function getFileInfo(
   connection: ConnectionOptions,
   filePath: string
 ): Promise<PowerShellResult> {
+  const storedPath = filePath ?? '';
+  const safeStoredPath = escapePsSingleQuotedString(storedPath);
   const command = `
-    if (Test-Path -Path '${filePath}') {
-      $file = Get-Item -Path '${filePath}'
+    $p = '${safeStoredPath}'
+    if (Test-Path -Path $p) {
+      $file = Get-Item -Path $p
       $isDirectory = $file.PSIsContainer
       $sizeBytes = $null
       if (-not $isDirectory -and $file -is [System.IO.FileInfo]) {
         $sizeBytes = $file.Length
       }
       @{
-        path = '${filePath}'
+        path = $p
         exists = $true
         name = $file.Name
         fullPath = $file.FullName
@@ -249,7 +367,7 @@ export async function getFileInfo(
         attributes = $file.Attributes.ToString()
       } | ConvertTo-Json
     } else {
-      @{ path = '${filePath}'; exists = $false } | ConvertTo-Json
+      @{ path = $p; exists = $false } | ConvertTo-Json
     }
   `;
   
@@ -261,22 +379,34 @@ export async function getFileInfo(
  */
 export async function getCurrentUser(connection: ConnectionOptions): Promise<PowerShellResult> {
   const command = `
-    $users = quser 2>&1
-    if ($LASTEXITCODE -eq 0) {
-      $users | Select-Object -Skip 1 | ForEach-Object {
-        $line = $_ -replace '\\s+', ','
-        $parts = $line -split ','
-        @{
-          Username = $parts[0]
-          SessionName = $parts[1]
-          ID = $parts[2]
-          State = $parts[3]
-          IdleTime = $parts[4]
-          LogonTime = $parts[5..$parts.Length] -join ' '
+    # WinRM + quser can fail to see the interactive session. Prefer Win32_ComputerSystem.UserName when available.
+    try {
+      $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
+      $u = $cs.UserName
+      if ($u) {
+        @{ Username = $u; Source = 'Win32_ComputerSystem' } | ConvertTo-Json
+      } else {
+        $users = quser 2>&1
+        if ($LASTEXITCODE -eq 0) {
+          $users | Select-Object -Skip 1 | ForEach-Object {
+            $line = $_ -replace '\\s+', ','
+            $parts = $line -split ','
+            @{
+              Username = $parts[0]
+              SessionName = $parts[1]
+              ID = $parts[2]
+              State = $parts[3]
+              IdleTime = $parts[4]
+              LogonTime = $parts[5..$parts.Length] -join ' '
+              Source = 'quser'
+            }
+          } | ConvertTo-Json
+        } else {
+          @{ NoUserLoggedIn = $true } | ConvertTo-Json
         }
-      } | ConvertTo-Json
-    } else {
-      @{ NoUserLoggedIn = $true } | ConvertTo-Json
+      }
+    } catch {
+      @{ NoUserLoggedIn = $true; error = $_.Exception.Message } | ConvertTo-Json
     }
   `;
   

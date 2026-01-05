@@ -6,6 +6,7 @@ import { Configuration } from './pages/Configuration';
 import { DataViewer } from './pages/DataViewer';
 import { PcViewer } from './pages/PcViewer';
 import { JobMonitor } from './pages/JobMonitor';
+import { AdHocScan } from './pages/AdHocScan';
 
 export default function App() {
   return (
@@ -26,6 +27,7 @@ export default function App() {
             {/* Backwards-compatible alias */}
             <Route path="historical-reports" element={<PcViewer />} />
             <Route path="job-monitor" element={<JobMonitor />} />
+            <Route path="adhoc-scan" element={<AdHocScan />} />
           </Route>
         </Routes>
       </div>

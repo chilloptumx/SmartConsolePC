@@ -40,4 +40,4 @@ COPY . .
 EXPOSE 5000
 
 # Start command (build happens at runtime via docker-compose command)
-CMD ["sh", "-c", "npx prisma migrate deploy && npm start"]
+CMD ["sh", "-c", "npx prisma migrate deploy && npm run prisma:seed && npm start"]
