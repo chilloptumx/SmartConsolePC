@@ -4,11 +4,11 @@ import { Monitor, Settings, Database, Activity, PcCase, ListChecks, Zap } from '
 export function Layout() {
   const navItems = [
     { to: '/dashboard', icon: Activity, label: 'Dashboard' },
-    { to: '/configuration', icon: Settings, label: 'Configuration' },
     { to: '/data-viewer', icon: Database, label: 'Data Viewer' },
     { to: '/pc-viewer', icon: PcCase, label: 'PC Viewer' },
     { to: '/job-monitor', icon: ListChecks, label: 'Job Monitor' },
     { to: '/adhoc-scan', icon: Zap, label: 'AdHoc Scan' },
+    { to: '/configuration', icon: Settings, label: 'Configuration' },
   ];
 
   return (
