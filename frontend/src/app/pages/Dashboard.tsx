@@ -45,6 +45,11 @@ export function Dashboard() {
   const [availableObjects, setAvailableObjects] = useState<CollectedObject[]>([]);
   const [selectedObjectKeys, setSelectedObjectKeys] = useState<Record<string, boolean>>({});
   const [latestByMachineAndObject, setLatestByMachineAndObject] = useState<Record<string, LatestResult | undefined>>({});
+  const [searchPing, setSearchPing] = useState('');
+  const [searchRegistry, setSearchRegistry] = useState('');
+  const [searchFile, setSearchFile] = useState('');
+  const [searchUser, setSearchUser] = useState('');
+  const [searchSystem, setSearchSystem] = useState('');
 
   // Fetch data from API
   useEffect(() => {
@@ -283,6 +288,41 @@ export function Dashboard() {
     }
     return typeof data === 'string' ? data : '';
   };
+
+  const filterObjects = (list: CollectedObject[], q: string) => {
+    const needle = q.trim().toLowerCase();
+    if (!needle) return list;
+    return list.filter((o) => {
+      const name = String(o?.checkName ?? '').toLowerCase();
+      const type = String(o?.checkType ?? '').toLowerCase();
+      return name.includes(needle) || type.includes(needle);
+    });
+  };
+
+  const toggleAllObjects = (list: CollectedObject[], on: boolean) => {
+    setSelectedObjectKeys((prev) => {
+      const next = { ...prev };
+      for (const o of list) next[makeObjectKey(o.checkType, o.checkName)] = on;
+      return next;
+    });
+  };
+
+  const pingObjects = useMemo(() => availableObjects.filter((o) => o.checkType === 'PING'), [availableObjects]);
+  const registryObjects = useMemo(() => availableObjects.filter((o) => o.checkType === 'REGISTRY_CHECK'), [availableObjects]);
+  const fileObjects = useMemo(() => availableObjects.filter((o) => o.checkType === 'FILE_CHECK'), [availableObjects]);
+  const userObjects = useMemo(() => availableObjects.filter((o) => o.checkType === 'USER_INFO'), [availableObjects]);
+  const systemObjects = useMemo(() => availableObjects.filter((o) => o.checkType === 'SYSTEM_INFO'), [availableObjects]);
+
+  const filteredPingObjects = useMemo(() => filterObjects(pingObjects, searchPing), [pingObjects, searchPing]);
+  const filteredRegistryObjects = useMemo(() => filterObjects(registryObjects, searchRegistry), [registryObjects, searchRegistry]);
+  const filteredFileObjects = useMemo(() => filterObjects(fileObjects, searchFile), [fileObjects, searchFile]);
+  const filteredUserObjects = useMemo(() => filterObjects(userObjects, searchUser), [userObjects, searchUser]);
+  const filteredSystemObjects = useMemo(() => filterObjects(systemObjects, searchSystem), [systemObjects, searchSystem]);
+
+  const selectedDynamicCount = useMemo(
+    () => Object.values(selectedObjectKeys).filter(Boolean).length,
+    [selectedObjectKeys]
+  );
 
   const isNotFoundResult = (r?: LatestResult) => {
     if (!r) return false;
@@ -813,86 +853,336 @@ export function Dashboard() {
                     <Settings className="w-4 h-4" />
                   </Button>
                 </DialogTrigger>
-                <DialogContent className="bg-slate-900 border-slate-800 sm:max-w-[500px]">
+                <DialogContent className="bg-slate-900 border-slate-800 sm:max-w-[980px]">
                   <DialogHeader>
                     <DialogTitle className="text-slate-100">Configure Machine Table Columns</DialogTitle>
                     <DialogDescription className="text-slate-400">
-                      Choose which columns to display in the machine status table.
+                      Choose which data to display in the machine status table. This list is dynamic and updates as new data is collected.
                     </DialogDescription>
                   </DialogHeader>
-                  <div className="space-y-4 py-4">
-                    <div className="space-y-3">
-                      <label className="flex items-center gap-3">
-                        <Checkbox 
-                          checked={displayColumns.ipAddress}
-                          onCheckedChange={(checked) =>
-                            setDisplayColumns(prev => ({ ...prev, ipAddress: checked as boolean }))
-                          }
-                        />
-                        <div>
-                          <span className="text-sm text-slate-300">IP Address</span>
-                          <p className="text-xs text-slate-500">Show machine IP/connection address</p>
-                        </div>
-                      </label>
-                      
-                      <label className="flex items-center gap-3">
-                        <Checkbox 
-                          checked={displayColumns.lastSeen}
-                          onCheckedChange={(checked) =>
-                            setDisplayColumns(prev => ({ ...prev, lastSeen: checked as boolean }))
-                          }
-                        />
-                        <div>
-                          <span className="text-sm text-slate-300">Last Seen</span>
-                          <p className="text-xs text-slate-500">Show when the machine last reported in</p>
-                        </div>
-                      </label>
-                      
-                      <label className="flex items-center gap-3">
-                        <Checkbox 
-                          checked={displayColumns.pcModel}
-                          onCheckedChange={(checked) =>
-                            setDisplayColumns(prev => ({ ...prev, pcModel: checked as boolean }))
-                          }
-                        />
-                        <div>
-                          <span className="text-sm text-slate-300">Model</span>
-                          <p className="text-xs text-slate-500">Show detected hardware model</p>
-                        </div>
-                      </label>
-                    </div>
-
-                    <div className="pt-2 border-t border-slate-800">
-                      <div className="text-sm font-semibold text-slate-200 mb-2">Collected Data Columns</div>
-                      <div className="text-xs text-slate-400 mb-3">
-                        Select any collected objects to show their latest result per machine.
-                      </div>
-                      <div className="max-h-64 overflow-auto pr-1 space-y-2">
-                        {availableObjects.length === 0 ? (
-                          <div className="text-sm text-slate-500">No collected objects found yet.</div>
-                        ) : (
-                          availableObjects.map((o) => {
-                            const key = makeObjectKey(o.checkType, o.checkName);
-                            const label = o.checkName || o.checkType;
-                            return (
-                              <label key={key} className="flex items-start gap-3">
+                  <div className="py-4">
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                      <Card className="bg-slate-900 border-slate-800 p-6 lg:col-span-1">
+                        <div className="space-y-4">
+                          <div className="rounded border border-slate-800 bg-slate-950 p-4">
+                            <div className="text-sm font-medium text-slate-200 mb-3">Built-in columns</div>
+                            <div className="space-y-2 text-sm">
+                              <label className="flex items-center gap-2 text-slate-300">
                                 <Checkbox
-                                  checked={!!selectedObjectKeys[key]}
-                                  onCheckedChange={(checked) =>
-                                    setSelectedObjectKeys((prev) => ({ ...prev, [key]: checked as boolean }))
-                                  }
+                                  checked={displayColumns.ipAddress}
+                                  onCheckedChange={(checked) => setDisplayColumns((prev) => ({ ...prev, ipAddress: checked as boolean }))}
                                 />
-                                <div className="min-w-0">
-                                  <div className="text-slate-300 text-sm truncate" title={`${o.checkType} · ${o.checkName}`}>
-                                    {label}
-                                  </div>
-                                  <div className="text-slate-500 text-xs font-mono truncate">{o.checkType}</div>
-                                </div>
+                                IP Address
                               </label>
-                            );
-                          })
-                        )}
-                      </div>
+                              <label className="flex items-center gap-2 text-slate-300">
+                                <Checkbox
+                                  checked={displayColumns.lastSeen}
+                                  onCheckedChange={(checked) => setDisplayColumns((prev) => ({ ...prev, lastSeen: checked as boolean }))}
+                                />
+                                Last Seen
+                              </label>
+                              <label className="flex items-center gap-2 text-slate-300">
+                                <Checkbox
+                                  checked={displayColumns.pcModel}
+                                  onCheckedChange={(checked) => setDisplayColumns((prev) => ({ ...prev, pcModel: checked as boolean }))}
+                                />
+                                Model
+                              </label>
+                            </div>
+                          </div>
+
+                          <div className="text-xs text-slate-500">
+                            Selected dynamic columns:{' '}
+                            <span className="text-slate-300 font-mono">
+                              {selectedDynamicCount}/{availableObjects.length}
+                            </span>
+                          </div>
+                        </div>
+                      </Card>
+
+                      <Card className="bg-slate-900 border-slate-800 p-6 lg:col-span-2">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                          {/* Ping */}
+                          <div className="rounded border border-slate-800 bg-slate-950 p-4">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="text-sm font-medium text-slate-200">Ping checks</div>
+                              <div className="flex items-center gap-2">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="border-slate-700 bg-slate-950 hover:bg-slate-900"
+                                  onClick={() => toggleAllObjects(pingObjects, true)}
+                                  disabled={pingObjects.length === 0}
+                                >
+                                  All
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="border-slate-700 bg-slate-950 hover:bg-slate-900"
+                                  onClick={() => toggleAllObjects(pingObjects, false)}
+                                  disabled={pingObjects.length === 0}
+                                >
+                                  None
+                                </Button>
+                              </div>
+                            </div>
+                            <Input
+                              value={searchPing}
+                              onChange={(e) => setSearchPing(e.target.value)}
+                              placeholder="Search ping checks…"
+                              className="mt-3 bg-slate-900 border-slate-800"
+                            />
+                            <div className="mt-3 max-h-56 overflow-auto pr-1 space-y-2">
+                              {pingObjects.length === 0 ? (
+                                <div className="text-sm text-slate-500">No ping objects collected yet.</div>
+                              ) : (
+                                filteredPingObjects.map((o) => {
+                                  const key = makeObjectKey(o.checkType, o.checkName);
+                                  return (
+                                    <label key={key} className="flex items-start gap-3">
+                                      <Checkbox
+                                        checked={!!selectedObjectKeys[key]}
+                                        onCheckedChange={(checked) => setSelectedObjectKeys((prev) => ({ ...prev, [key]: checked as boolean }))}
+                                      />
+                                      <div className="min-w-0">
+                                        <div className="text-slate-300 text-sm truncate" title={`${o.checkType} · ${o.checkName}`}>
+                                          {o.checkName}
+                                        </div>
+                                        <div className="text-slate-500 text-xs font-mono truncate">{o.checkType}</div>
+                                      </div>
+                                    </label>
+                                  );
+                                })
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Registry */}
+                          <div className="rounded border border-slate-800 bg-slate-950 p-4">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="text-sm font-medium text-slate-200">Registry checks</div>
+                              <div className="flex items-center gap-2">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="border-slate-700 bg-slate-950 hover:bg-slate-900"
+                                  onClick={() => toggleAllObjects(registryObjects, true)}
+                                  disabled={registryObjects.length === 0}
+                                >
+                                  All
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="border-slate-700 bg-slate-950 hover:bg-slate-900"
+                                  onClick={() => toggleAllObjects(registryObjects, false)}
+                                  disabled={registryObjects.length === 0}
+                                >
+                                  None
+                                </Button>
+                              </div>
+                            </div>
+                            <Input
+                              value={searchRegistry}
+                              onChange={(e) => setSearchRegistry(e.target.value)}
+                              placeholder="Search registry checks…"
+                              className="mt-3 bg-slate-900 border-slate-800"
+                            />
+                            <div className="mt-3 max-h-56 overflow-auto pr-1 space-y-2">
+                              {registryObjects.length === 0 ? (
+                                <div className="text-sm text-slate-500">No registry objects collected yet.</div>
+                              ) : (
+                                filteredRegistryObjects.map((o) => {
+                                  const key = makeObjectKey(o.checkType, o.checkName);
+                                  return (
+                                    <label key={key} className="flex items-start gap-3">
+                                      <Checkbox
+                                        checked={!!selectedObjectKeys[key]}
+                                        onCheckedChange={(checked) => setSelectedObjectKeys((prev) => ({ ...prev, [key]: checked as boolean }))}
+                                      />
+                                      <div className="min-w-0">
+                                        <div className="text-slate-300 text-sm truncate" title={`${o.checkType} · ${o.checkName}`}>
+                                          {o.checkName}
+                                        </div>
+                                        <div className="text-slate-500 text-xs font-mono truncate">{o.checkType}</div>
+                                      </div>
+                                    </label>
+                                  );
+                                })
+                              )}
+                            </div>
+                          </div>
+
+                          {/* File */}
+                          <div className="rounded border border-slate-800 bg-slate-950 p-4">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="text-sm font-medium text-slate-200">File checks</div>
+                              <div className="flex items-center gap-2">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="border-slate-700 bg-slate-950 hover:bg-slate-900"
+                                  onClick={() => toggleAllObjects(fileObjects, true)}
+                                  disabled={fileObjects.length === 0}
+                                >
+                                  All
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="border-slate-700 bg-slate-950 hover:bg-slate-900"
+                                  onClick={() => toggleAllObjects(fileObjects, false)}
+                                  disabled={fileObjects.length === 0}
+                                >
+                                  None
+                                </Button>
+                              </div>
+                            </div>
+                            <Input
+                              value={searchFile}
+                              onChange={(e) => setSearchFile(e.target.value)}
+                              placeholder="Search file checks…"
+                              className="mt-3 bg-slate-900 border-slate-800"
+                            />
+                            <div className="mt-3 max-h-56 overflow-auto pr-1 space-y-2">
+                              {fileObjects.length === 0 ? (
+                                <div className="text-sm text-slate-500">No file objects collected yet.</div>
+                              ) : (
+                                filteredFileObjects.map((o) => {
+                                  const key = makeObjectKey(o.checkType, o.checkName);
+                                  return (
+                                    <label key={key} className="flex items-start gap-3">
+                                      <Checkbox
+                                        checked={!!selectedObjectKeys[key]}
+                                        onCheckedChange={(checked) => setSelectedObjectKeys((prev) => ({ ...prev, [key]: checked as boolean }))}
+                                      />
+                                      <div className="min-w-0">
+                                        <div className="text-slate-300 text-sm truncate" title={`${o.checkType} · ${o.checkName}`}>
+                                          {o.checkName}
+                                        </div>
+                                        <div className="text-slate-500 text-xs font-mono truncate">{o.checkType}</div>
+                                      </div>
+                                    </label>
+                                  );
+                                })
+                              )}
+                            </div>
+                          </div>
+
+                          {/* User */}
+                          <div className="rounded border border-slate-800 bg-slate-950 p-4">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="text-sm font-medium text-slate-200">User checks</div>
+                              <div className="flex items-center gap-2">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="border-slate-700 bg-slate-950 hover:bg-slate-900"
+                                  onClick={() => toggleAllObjects(userObjects, true)}
+                                  disabled={userObjects.length === 0}
+                                >
+                                  All
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="border-slate-700 bg-slate-950 hover:bg-slate-900"
+                                  onClick={() => toggleAllObjects(userObjects, false)}
+                                  disabled={userObjects.length === 0}
+                                >
+                                  None
+                                </Button>
+                              </div>
+                            </div>
+                            <Input
+                              value={searchUser}
+                              onChange={(e) => setSearchUser(e.target.value)}
+                              placeholder="Search user checks…"
+                              className="mt-3 bg-slate-900 border-slate-800"
+                            />
+                            <div className="mt-3 max-h-56 overflow-auto pr-1 space-y-2">
+                              {userObjects.length === 0 ? (
+                                <div className="text-sm text-slate-500">No user objects collected yet.</div>
+                              ) : (
+                                filteredUserObjects.map((o) => {
+                                  const key = makeObjectKey(o.checkType, o.checkName);
+                                  return (
+                                    <label key={key} className="flex items-start gap-3">
+                                      <Checkbox
+                                        checked={!!selectedObjectKeys[key]}
+                                        onCheckedChange={(checked) => setSelectedObjectKeys((prev) => ({ ...prev, [key]: checked as boolean }))}
+                                      />
+                                      <div className="min-w-0">
+                                        <div className="text-slate-300 text-sm truncate" title={`${o.checkType} · ${o.checkName}`}>
+                                          {o.checkName}
+                                        </div>
+                                        <div className="text-slate-500 text-xs font-mono truncate">{o.checkType}</div>
+                                      </div>
+                                    </label>
+                                  );
+                                })
+                              )}
+                            </div>
+                          </div>
+
+                          {/* System */}
+                          <div className="rounded border border-slate-800 bg-slate-950 p-4">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="text-sm font-medium text-slate-200">System checks</div>
+                              <div className="flex items-center gap-2">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="border-slate-700 bg-slate-950 hover:bg-slate-900"
+                                  onClick={() => toggleAllObjects(systemObjects, true)}
+                                  disabled={systemObjects.length === 0}
+                                >
+                                  All
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="border-slate-700 bg-slate-950 hover:bg-slate-900"
+                                  onClick={() => toggleAllObjects(systemObjects, false)}
+                                  disabled={systemObjects.length === 0}
+                                >
+                                  None
+                                </Button>
+                              </div>
+                            </div>
+                            <Input
+                              value={searchSystem}
+                              onChange={(e) => setSearchSystem(e.target.value)}
+                              placeholder="Search system checks…"
+                              className="mt-3 bg-slate-900 border-slate-800"
+                            />
+                            <div className="mt-3 max-h-56 overflow-auto pr-1 space-y-2">
+                              {systemObjects.length === 0 ? (
+                                <div className="text-sm text-slate-500">No system objects collected yet.</div>
+                              ) : (
+                                filteredSystemObjects.map((o) => {
+                                  const key = makeObjectKey(o.checkType, o.checkName);
+                                  return (
+                                    <label key={key} className="flex items-start gap-3">
+                                      <Checkbox
+                                        checked={!!selectedObjectKeys[key]}
+                                        onCheckedChange={(checked) => setSelectedObjectKeys((prev) => ({ ...prev, [key]: checked as boolean }))}
+                                      />
+                                      <div className="min-w-0">
+                                        <div className="text-slate-300 text-sm truncate" title={`${o.checkType} · ${o.checkName}`}>
+                                          {o.checkName}
+                                        </div>
+                                        <div className="text-slate-500 text-xs font-mono truncate">{o.checkType}</div>
+                                      </div>
+                                    </label>
+                                  );
+                                })
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </Card>
                     </div>
                   </div>
                   <DialogFooter>
