@@ -741,36 +741,48 @@ export function Configuration() {
             return next;
           });
         }}
-        className="space-y-6 lg:space-y-0 lg:flex lg:items-start lg:gap-6"
+        // NOTE: `Tabs` has a default `flex flex-col` layout (see `components/ui/tabs.tsx`).
+        // We switch to a 2-column layout on large screens.
+        className="gap-6 lg:flex-row lg:items-start"
       >
-        <TabsList className="bg-slate-900 border border-slate-800 p-3 rounded-lg flex flex-col items-stretch gap-1 lg:w-72 lg:sticky lg:top-6">
+        {/* Sidebar navigation */}
+        <TabsList
+          className={[
+            // Override TabsList defaults: `h-9 w-fit items-center justify-center`
+            'h-auto w-full items-stretch justify-start',
+            // Our sidebar styling
+            'bg-slate-900 border border-slate-800 p-3 rounded-lg flex flex-col gap-1',
+            // Large screens: fixed sidebar
+            'lg:w-72 lg:sticky lg:top-6 lg:max-h-[calc(100vh-8rem)] lg:overflow-auto',
+          ].join(' ')}
+        >
           <div role="presentation" className="px-2 pt-1 pb-1 text-[11px] uppercase tracking-wider text-slate-500">
             Collected data (objects)
           </div>
           <TabsTrigger
             value="registry"
-            className="w-full justify-start data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
+            className="w-full flex-none h-auto justify-start py-2 data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
           >
             <FolderKey className="w-4 h-4 mr-2" />
             Registry Checks
           </TabsTrigger>
           <TabsTrigger
             value="files"
-            className="w-full justify-start data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
+            className="w-full flex-none h-auto justify-start py-2 data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
           >
             <FileText className="w-4 h-4 mr-2" />
             File Checks
           </TabsTrigger>
           <TabsTrigger
             value="users"
-            className="w-full justify-start data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
+            className="w-full flex-none h-auto justify-start py-2 data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
           >
             <User className="w-4 h-4 mr-2" />
             User Checks
           </TabsTrigger>
           <TabsTrigger
             value="system"
-            className="w-full justify-start data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
+            className="w-full flex-none h-auto justify-start py-2 data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
           >
             <Monitor className="w-4 h-4 mr-2" />
             System Checks
@@ -781,14 +793,14 @@ export function Configuration() {
           </div>
           <TabsTrigger
             value="machines"
-            className="w-full justify-start data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
+            className="w-full flex-none h-auto justify-start py-2 data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
           >
             <Server className="w-4 h-4 mr-2" />
             PC List
           </TabsTrigger>
           <TabsTrigger
             value="locations"
-            className="w-full justify-start data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
+            className="w-full flex-none h-auto justify-start py-2 data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
           >
             <MapPin className="w-4 h-4 mr-2" />
             Define Locations
@@ -799,21 +811,21 @@ export function Configuration() {
           </div>
           <TabsTrigger
             value="job-scheduler"
-            className="w-full justify-start data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
+            className="w-full flex-none h-auto justify-start py-2 data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
           >
             <Clock className="w-4 h-4 mr-2" />
             Job Scheduler
           </TabsTrigger>
           <TabsTrigger
             value="email-reports"
-            className="w-full justify-start data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
+            className="w-full flex-none h-auto justify-start py-2 data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
           >
             <Mail className="w-4 h-4 mr-2" />
             Report Scheduler
           </TabsTrigger>
           <TabsTrigger
             value="ping"
-            className="w-full justify-start data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
+            className="w-full flex-none h-auto justify-start py-2 data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
           >
             <Activity className="w-4 h-4 mr-2" />
             Ping Configuration
@@ -824,7 +836,7 @@ export function Configuration() {
           </div>
           <TabsTrigger
             value="smtp"
-            className="w-full justify-start data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
+            className="w-full flex-none h-auto justify-start py-2 data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
           >
             <Mail className="w-4 h-4 mr-2" />
             SMTP
@@ -835,7 +847,7 @@ export function Configuration() {
           </div>
           <TabsTrigger
             value="auth"
-            className="w-full justify-start data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
+            className="w-full flex-none h-auto justify-start py-2 data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
           >
             <KeyRound className="w-4 h-4 mr-2" />
             Authentication
@@ -846,7 +858,7 @@ export function Configuration() {
           </div>
           <TabsTrigger
             value="database"
-            className="w-full justify-start data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
+            className="w-full flex-none h-auto justify-start py-2 data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
           >
             <Database className="w-4 h-4 mr-2" />
             Database
