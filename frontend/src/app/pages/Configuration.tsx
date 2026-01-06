@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Plus, Pencil, Trash2, Server, FileText, FolderKey, Mail, Clock, User, Monitor, Activity, KeyRound, Database, Eye, EyeOff, MapPin } from 'lucide-react';
+import { Plus, Pencil, Trash2, Server, FileText, FolderKey, Mail, Clock, User, Monitor, KeyRound, Database, Eye, EyeOff, MapPin } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Card } from '../components/ui/card';
 import { Input } from '../components/ui/input';
@@ -24,7 +24,6 @@ export function Configuration() {
   const [locations, setLocations] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [smtp, setSmtp] = useState<any | null>(null);
-  const [builtIn, setBuiltIn] = useState<any | null>(null);
   const [scanAuth, setScanAuth] = useState<any | null>(null);
   const [dbInfo, setDbInfo] = useState<any | null>(null);
   const [activeTab, setActiveTab] = useState<string>(() => searchParams.get('tab') || 'machines');
@@ -132,7 +131,7 @@ export function Configuration() {
   const loadData = async () => {
     try {
       setLoading(true);
-      const [machinesData, registryData, fileData, userData, systemData, locationsData, smtpData, builtInData, authData, dbData] = await Promise.all([
+      const [machinesData, registryData, fileData, userData, systemData, locationsData, smtpData, authData, dbData] = await Promise.all([
         api.getMachines(),
         api.getRegistryChecks(),
         api.getFileChecks(),
@@ -140,7 +139,6 @@ export function Configuration() {
         api.getSystemChecks(),
         api.getLocations().catch(() => []),
         api.getSmtpSettings().catch(() => null),
-        api.getBuiltInCheckSettings().catch(() => null),
         api.getScanAuthSettings().catch(() => null),
         api.getDatabaseSettings().catch(() => null),
       ]);
@@ -151,7 +149,6 @@ export function Configuration() {
       setSystemChecks(systemData);
       setLocations(locationsData);
       setSmtp(smtpData);
-      setBuiltIn(builtInData);
       setScanAuth(authData);
       setDbInfo(dbData);
 
@@ -823,13 +820,6 @@ export function Configuration() {
             <Mail className="w-4 h-4 mr-2" />
             Report Scheduler
           </TabsTrigger>
-          <TabsTrigger
-            value="ping"
-            className="w-full flex-none h-auto justify-start py-2 data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
-          >
-            <Activity className="w-4 h-4 mr-2" />
-            Ping Configuration
-          </TabsTrigger>
 
           <div role="presentation" className="mt-3 px-2 pt-2 pb-1 text-[11px] uppercase tracking-wider text-slate-500 border-t border-slate-800">
             Integrations
@@ -841,21 +831,13 @@ export function Configuration() {
             <Mail className="w-4 h-4 mr-2" />
             SMTP
           </TabsTrigger>
-
-          <div role="presentation" className="mt-3 px-2 pt-2 pb-1 text-[11px] uppercase tracking-wider text-slate-500 border-t border-slate-800">
-            Security
-          </div>
           <TabsTrigger
             value="auth"
             className="w-full flex-none h-auto justify-start py-2 data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
           >
             <KeyRound className="w-4 h-4 mr-2" />
-            Authentication
+            Scan authentication
           </TabsTrigger>
-
-          <div role="presentation" className="mt-3 px-2 pt-2 pb-1 text-[11px] uppercase tracking-wider text-slate-500 border-t border-slate-800">
-            Platform
-          </div>
           <TabsTrigger
             value="database"
             className="w-full flex-none h-auto justify-start py-2 data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
@@ -1838,69 +1820,6 @@ export function Configuration() {
           <TabsContent value="job-scheduler">
           <Card className="bg-slate-900 border-slate-800 p-6">
             <Scheduling embedded />
-          </Card>
-          </TabsContent>
-
-        {/* Ping Configuration Tab */}
-          <TabsContent value="ping">
-          <Card className="bg-slate-900 border-slate-800 p-6">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <h3 className="font-semibold text-slate-200">Ping Configuration</h3>
-                  <p className="text-sm text-slate-400 mt-1">
-                    Controls how the built-in <span className="font-mono text-slate-300">PING</span> check behaves.
-                  </p>
-                </div>
-                <div className="text-right">
-                  <div className="text-xs text-slate-500">Mode</div>
-                  <div className="inline-flex items-center rounded px-2 py-1 text-xs bg-slate-800 text-slate-200">
-                    {builtIn?.ping?.mode || '—'}
-                  </div>
-                </div>
-              </div>
-
-              <div className="mt-4 rounded border border-slate-800 bg-slate-950 p-4 text-sm text-slate-300">
-                <div className="text-slate-400">Description</div>
-                <div className="mt-1">{builtIn?.ping?.description || '—'}</div>
-              </div>
-
-              <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="rounded border border-slate-800 bg-slate-950 p-4">
-                  <div className="text-sm font-medium text-slate-200">Effective timeout</div>
-                  <div className="mt-2 text-sm text-slate-300">
-                    <span className="text-slate-400">WINDOWS_CONNECTION_TIMEOUT</span>{' '}
-                    <span className="font-mono text-slate-200">
-                      {builtIn?.ping?.effectiveTimeoutMs ?? builtIn?.windowsExecution?.connectionTimeoutMs ?? '—'} ms
-                    </span>
-                  </div>
-                </div>
-                <div className="rounded border border-slate-800 bg-slate-950 p-4">
-                  <div className="text-sm font-medium text-slate-200">Output fields</div>
-                  <div className="mt-2 text-sm text-slate-300 font-mono">
-                    {(builtIn?.ping?.outputShape || []).join(', ') || '—'}
-                  </div>
-                </div>
-              </div>
-
-              <div className="mt-4 flex items-center justify-between gap-3">
-                <p className="text-xs text-slate-500">
-                  Scheduling for PING is configured under Job Scheduler.
-                </p>
-                <Button
-                  variant="outline"
-                  className="border-slate-700 bg-slate-950 hover:bg-slate-900"
-                  onClick={() => {
-                    const snippet = [
-                      '# WinRM execution timeout used by PING (and other checks)',
-                      'WINDOWS_CONNECTION_TIMEOUT=30000',
-                      '',
-                    ].join('\n');
-                    copyText(snippet);
-                  }}
-                >
-                  Copy .env snippet
-                </Button>
-              </div>
           </Card>
           </TabsContent>
 
