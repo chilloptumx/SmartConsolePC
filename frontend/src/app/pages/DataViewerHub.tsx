@@ -40,25 +40,20 @@ export function DataViewerHub() {
             return next;
           });
         }}
-        className="gap-6 lg:flex-row lg:items-start"
+        className="gap-6"
       >
-        {/* Internal left menu (matches Configuration style) */}
+        {/* Internal top menu (Configuration-style selected state, but doesn't steal width) */}
         <TabsList
           className={[
-            'h-auto w-full items-stretch justify-start',
-            'bg-slate-900 border border-slate-800 p-3 rounded-lg flex flex-col gap-1',
-            // Keep the menu above sticky/scrolling content inside the right pane
+            'h-auto w-full items-center justify-start',
+            'bg-slate-900 border border-slate-800 p-2 rounded-lg flex flex-row gap-1',
+            'overflow-x-auto',
             'relative z-20',
-            'lg:w-72 lg:sticky lg:top-6 lg:max-h-[calc(100vh-8rem)] lg:overflow-auto',
           ].join(' ')}
         >
-          <div role="presentation" className="px-2 pt-1 pb-1 text-[11px] uppercase tracking-wider text-slate-500">
-            Data viewer
-          </div>
-
           <TabsTrigger
             value="pc-history"
-            className="w-full flex-none h-auto justify-start py-2 data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
+            className="flex-none h-auto justify-start py-2 px-3 data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
           >
             <PcCase className="w-4 h-4 mr-2" />
             PC History
@@ -66,7 +61,7 @@ export function DataViewerHub() {
 
           <TabsTrigger
             value="job-monitor"
-            className="w-full flex-none h-auto justify-start py-2 data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
+            className="flex-none h-auto justify-start py-2 px-3 data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
           >
             <ListChecks className="w-4 h-4 mr-2" />
             Job Monitor
@@ -74,27 +69,24 @@ export function DataViewerHub() {
 
           <TabsTrigger
             value="results"
-            className="w-full flex-none h-auto justify-start py-2 data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
+            className="flex-none h-auto justify-start py-2 px-3 data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
           >
             <Database className="w-4 h-4 mr-2" />
             Results
           </TabsTrigger>
         </TabsList>
 
-        {/* Right pane: constrain width so wide tables scroll inside, not over the menu */}
-        <div className="lg:flex-1 min-w-0 w-full space-y-6 overflow-hidden">
-          <TabsContent value="pc-history" className="min-w-0">
-            <PcViewer embedded />
-          </TabsContent>
+        <TabsContent value="pc-history" className="min-w-0">
+          <PcViewer embedded />
+        </TabsContent>
 
-          <TabsContent value="job-monitor" className="min-w-0">
-            <JobMonitor embedded />
-          </TabsContent>
+        <TabsContent value="job-monitor" className="min-w-0">
+          <JobMonitor embedded />
+        </TabsContent>
 
-          <TabsContent value="results" className="min-w-0">
-            <ResultsViewer />
-          </TabsContent>
-        </div>
+        <TabsContent value="results" className="min-w-0">
+          <ResultsViewer />
+        </TabsContent>
       </Tabs>
     </div>
   );
