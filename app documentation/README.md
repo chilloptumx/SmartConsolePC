@@ -12,6 +12,10 @@ This folder contains the canonical documentation for the **Smart Console PC Heal
 - `07-troubleshooting.md`: Common issues and how to debug
 - `HANDOFF.md`: Next-session handoff (what’s done, what to do next, where things live)
 
+### Extra learning material (tutor-style)
+If you want a slower, more “teaching-oriented” walkthrough (mental models, diagrams, glossary), see:
+- `tutor app tutor/`
+
 ### Source of truth
 If anything in the root `README.md` conflicts with these docs, treat **this folder** as the source of truth.
 

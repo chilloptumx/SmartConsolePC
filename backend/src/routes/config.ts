@@ -233,10 +233,28 @@ router.put('/service-checks/:id', async (req, res) => {
   const ep = typeof executablePath === 'string' ? executablePath.trim() : executablePath;
   const exp = typeof expectedStatus === 'string' ? expectedStatus.trim() : expectedStatus;
 
+  // Validate: if caller attempts to update serviceName/executablePath, the resulting record
+  // must still have at least one of them (otherwise it can never match any service).
+  if (name !== undefined && (typeof name !== 'string' || !name.trim())) {
+    return res.status(400).json({ error: 'Name required' });
+  }
+
+  const existing = await (prisma as any).serviceCheck.findUnique({ where: { id: req.params.id } });
+  if (!existing) return res.status(404).json({ error: 'Service check not found' });
+
+  const nextServiceName =
+    serviceName !== undefined ? (sn ? sn : null) : (existing.serviceName ?? null);
+  const nextExecutablePath =
+    executablePath !== undefined ? (ep ? ep : null) : (existing.executablePath ?? null);
+
+  if (!nextServiceName && !nextExecutablePath) {
+    return res.status(400).json({ error: 'Provide at least one of serviceName or executablePath' });
+  }
+
   const check = await (prisma as any).serviceCheck.update({
     where: { id: req.params.id },
     data: {
-      ...(name && { name }),
+      ...(name !== undefined && { name: typeof name === 'string' ? name.trim() : name }),
       ...(serviceName !== undefined && { serviceName: sn ? sn : null }),
       ...(executablePath !== undefined && { executablePath: ep ? ep : null }),
       ...(expectedStatus !== undefined && { expectedStatus: exp ? exp : 'Running' }),

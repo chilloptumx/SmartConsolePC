@@ -40,4 +40,8 @@ coverage/
 database-backup.sql
 healthcheck-app.tar.gz
 
+# --- Tutor tooling artifacts (generated locally; not part of the app) ---
+.tutor_file_list.txt
+.tutor_inventory.json
+
 

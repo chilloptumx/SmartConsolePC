@@ -67,12 +67,29 @@ export function EmailReports({ embedded = false }: { embedded?: boolean }) {
     }
 
     try {
+      // Backend expects a flexible `filterConfig` object plus explicit `columns` to include.
+      // Keep this UI simple: allow filtering by type/status, and include a sensible default column set.
+      const filterConfig: any = {};
+      if (filterType !== 'all') filterConfig.checkTypes = [filterType];
+      if (filterStatus !== 'all') filterConfig.status = [filterStatus];
+
+      const columns = [
+        'Machine',
+        'Location',
+        'Check Type',
+        'Check Name',
+        'Status',
+        'Timestamp',
+        'Duration',
+        'Message',
+      ];
+
       await api.createEmailReport({
         name: reportName,
         schedule: reportSchedule,
         recipients: recipientList,
-        filterType: filterType === 'all' ? undefined : filterType,
-        filterStatus: filterStatus === 'all' ? undefined : filterStatus
+        filterConfig,
+        columns,
       });
       
       toast.success('Email report created successfully');

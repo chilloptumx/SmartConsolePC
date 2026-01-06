@@ -308,6 +308,11 @@ try {
 $result | ConvertTo-Json -Depth 6
 `;
 
+      const SNMP_CHECK_NAME = 'SNMP Trap Service';
+      const SNMP_SERVICE_NAME = 'SNMPTRAP';
+      // Store/compare as a normal Windows path (single backslashes at runtime).
+      const SNMP_EXE_PATH = 'C:\\WINDOWS\\System32\\snmptrap.exe';
+
       const defaultDesc = `Checks Windows service state for the SNMP Trap service (snmptrap.exe).
 
 ${snmpCollectorSnippet}`;
@@ -315,9 +320,9 @@ ${snmpCollectorSnippet}`;
       const existing = await svc.findFirst({
         where: {
           OR: [
-            { serviceName: 'SNMPTRAP' },
-            { executablePath: 'C:\\\\WINDOWS\\\\System32\\\\snmptrap.exe' },
-            { name: 'SNMP Trap Service' },
+            { serviceName: SNMP_SERVICE_NAME },
+            { executablePath: SNMP_EXE_PATH },
+            { name: SNMP_CHECK_NAME },
           ],
         },
       });
@@ -325,9 +330,9 @@ ${snmpCollectorSnippet}`;
       if (!existing) {
         await svc.create({
           data: {
-            name: 'SNMP Trap Service',
-            serviceName: 'SNMPTRAP',
-            executablePath: 'C:\\WINDOWS\\System32\\snmptrap.exe',
+            name: SNMP_CHECK_NAME,
+            serviceName: SNMP_SERVICE_NAME,
+            executablePath: SNMP_EXE_PATH,
             expectedStatus: 'Running',
             description: defaultDesc,
             isActive: true,
@@ -336,10 +341,10 @@ ${snmpCollectorSnippet}`;
         console.log('✓ Ensured service check: SNMP Trap Service (created)');
       } else {
         const updates: any = {};
-        if (!(existing.name ?? '').toString().trim()) updates.name = 'SNMP Trap Service';
-        if (!(existing.serviceName ?? '').toString().trim()) updates.serviceName = 'SNMPTRAP';
+        if (!(existing.name ?? '').toString().trim()) updates.name = SNMP_CHECK_NAME;
+        if (!(existing.serviceName ?? '').toString().trim()) updates.serviceName = SNMP_SERVICE_NAME;
         if (!(existing.executablePath ?? '').toString().trim())
-          updates.executablePath = 'C:\\WINDOWS\\System32\\snmptrap.exe';
+          updates.executablePath = SNMP_EXE_PATH;
         if (!(existing.expectedStatus ?? '').toString().trim()) updates.expectedStatus = 'Running';
 
         const currentDesc = (existing.description ?? '').toString();

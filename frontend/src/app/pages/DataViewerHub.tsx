@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Database, ListChecks, PcCase } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
-import { PcViewer } from './PcViewer';
+import { PcHistory } from './PcHistory';
 import { JobMonitor } from './JobMonitor';
 import { DataViewer as ResultsViewer } from './DataViewer';
 
@@ -77,7 +77,7 @@ export function DataViewerHub() {
         </TabsList>
 
         <TabsContent value="pc-history" className="min-w-0">
-          <PcViewer embedded />
+                <PcHistory embedded />
         </TabsContent>
 
         <TabsContent value="job-monitor" className="min-w-0">

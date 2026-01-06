@@ -5,7 +5,7 @@ CREATE SCHEMA IF NOT EXISTS "public";
 CREATE TYPE "MachineStatus" AS ENUM ('ONLINE', 'OFFLINE', 'WARNING', 'ERROR', 'UNKNOWN');
 
 -- CreateEnum
-CREATE TYPE "JobType" AS ENUM ('PING', 'REGISTRY_CHECK', 'FILE_CHECK', 'USER_INFO', 'SYSTEM_INFO', 'FULL_CHECK');
+CREATE TYPE "JobType" AS ENUM ('PING', 'REGISTRY_CHECK', 'FILE_CHECK', 'SERVICE_CHECK', 'USER_INFO', 'SYSTEM_INFO', 'BASELINE_CHECK', 'FULL_CHECK');
 
 -- CreateEnum
 CREATE TYPE "CheckStatus" AS ENUM ('SUCCESS', 'FAILED', 'WARNING', 'TIMEOUT');
@@ -72,6 +72,21 @@ CREATE TABLE "file_checks" (
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
     CONSTRAINT "file_checks_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "service_checks" (
+    "id" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "serviceName" TEXT,
+    "executablePath" TEXT,
+    "expectedStatus" TEXT NOT NULL DEFAULT 'Running',
+    "description" TEXT,
+    "isActive" BOOLEAN NOT NULL DEFAULT true,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "service_checks_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable

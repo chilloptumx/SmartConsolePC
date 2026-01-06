@@ -299,6 +299,61 @@ class ApiClient {
     });
   }
 
+  async getLongSessions(payload: { machineIds: string[]; hours: number; lookbackHours?: number }) {
+    return this.request<{
+      hours: number;
+      lookbackHours: number;
+      windowStart: string;
+      offenders: Array<{
+        machineId: string;
+        user: string;
+        usedCheckName: string;
+        latestSeenAt: string;
+        observedContinuousSince: string;
+        observedContinuousHours: number;
+        samplesConsidered: number;
+      }>;
+      insufficient: Array<{ machineId: string; reason: string; details?: any }>;
+      notes: string[];
+    }>(`/api/data/long-sessions`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async getWarningsBucket(payload: {
+    machineIds: string[];
+    checkTypes?: string[];
+    statuses?: string[];
+    lookbackHours?: number;
+    maxMatchesPerMachine?: number;
+  }) {
+    return this.request<{
+      machineIds: string[];
+      checkTypes: string[];
+      statuses: string[];
+      lookbackHours: number;
+      maxMatchesPerMachine: number;
+      lookbackStart: string;
+      offenders: Array<{
+        machineId: string;
+        matches: Array<{
+          checkType: string;
+          checkName: string;
+          status: string;
+          message: string | null;
+          createdAt: string;
+        }>;
+      }>;
+      insufficient: Array<{ machineId: string; reason: string }>;
+      truncated: boolean;
+      notes: string[];
+    }>(`/api/data/warnings-bucket`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
   // Ad-hoc scan
   async runAdHocScan(payload: {
     machineIds: string[];

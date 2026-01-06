@@ -56,7 +56,7 @@ Notes:
 Either run the helper script:
 
 ```powershell
-.\Database\ build\02-apply-schema.ps1 -DatabaseUrl "postgresql://healthcheck:<PASSWORD>@<HOST>:5432/healthcheck?schema=public"
+& ".\\Database build\\02-apply-schema.ps1" -DatabaseUrl "postgresql://healthcheck:<PASSWORD>@<HOST>:5432/healthcheck?schema=public"
 ```
 
 Or run `psql` directly:
@@ -70,7 +70,7 @@ psql "postgresql://healthcheck:<PASSWORD>@<HOST>:5432/healthcheck?schema=public"
 If `backend/prisma/schema.prisma` changes, regenerate `Database build/schema.sql`:
 
 ```powershell
-.\Database\ build\03-generate-schema.ps1
+& ".\\Database build\\03-generate-schema.ps1"
 ```
 
 This uses `prisma migrate diff --from-empty --to-schema-datamodel ... --script` to produce a fresh schema-only SQL file.

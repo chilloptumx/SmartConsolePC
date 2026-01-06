@@ -29,6 +29,18 @@ function normalizeUserString(u?: string | null) {
   };
 }
 
+function usersMatch(a?: string | null, b?: string | null) {
+  const an = normalizeUserString(a);
+  const bn = normalizeUserString(b);
+  if (!an || !bn) return false;
+  return (
+    an.fullLower === bn.fullLower ||
+    an.shortLower === bn.fullLower ||
+    an.fullLower === bn.shortLower ||
+    an.shortLower === bn.shortLower
+  );
+}
+
 function extractUserInfo(resultData: any): { currentUser?: string; lastUser?: string } {
   const data = resultData && typeof resultData === 'object' ? resultData : {};
 
@@ -67,8 +79,327 @@ function extractUserInfo(resultData: any): { currentUser?: string; lastUser?: st
   return { currentUser, lastUser };
 }
 
+// Report machines where a user appears to have remained logged in continuously
+// for >= N hours (based on USER_INFO history) without a "logoff" observation.
+//
+// Semantics:
+// - "Logoff observed" is approximated as a USER_INFO row that shows no current user.
+// - "User changed" is treated as a session break as well (different user observed).
+// - To avoid false positives, we require enough check history: we must observe
+//   continuous login spanning at least the threshold window.
+router.post('/long-sessions', async (req, res) => {
+  const body = (req.body ?? {}) as any;
+  const machineIds = Array.isArray(body.machineIds) ? body.machineIds.filter((x: any) => typeof x === 'string') : [];
+  const hoursRaw = body.hours;
+  const lookbackRaw = body.lookbackHours;
+
+  const hours = Number(hoursRaw);
+  if (!Number.isFinite(hours) || hours <= 0) {
+    return res.status(400).json({ error: 'hours must be a positive number' });
+  }
+  if (hours > 168) {
+    return res.status(400).json({ error: 'hours is too large (max 168)' });
+  }
+
+  const lookbackHours = (() => {
+    const v = Number(lookbackRaw);
+    if (Number.isFinite(v) && v > 0) return Math.min(336, Math.max(v, hours));
+    // Add cushion to tolerate schedule gaps / missed samples.
+    return Math.min(336, Math.max(hours + 6, hours));
+  })();
+
+  if (machineIds.length === 0) return res.json({ hours, lookbackHours, offenders: [], insufficient: [], notes: [] });
+  if (machineIds.length > 200) return res.status(400).json({ error: 'machineIds is too large' });
+
+  const now = new Date();
+  const windowStart = new Date(now.getTime() - hours * 60 * 60 * 1000);
+  const lookbackStart = new Date(now.getTime() - lookbackHours * 60 * 60 * 1000);
+
+  const rows = await prisma.checkResult.findMany({
+    where: {
+      machineId: { in: machineIds },
+      checkType: 'USER_INFO',
+      createdAt: { gte: lookbackStart },
+    },
+    orderBy: [{ machineId: 'asc' }, { createdAt: 'desc' }],
+    take: Math.min(50000, machineIds.length * 1500),
+    select: {
+      machineId: true,
+      checkName: true,
+      createdAt: true,
+      resultData: true,
+      status: true,
+    },
+  });
+
+  const byMachine = new Map<string, Array<{ createdAt: Date; checkName: string; resultData: any; status: any }>>();
+  for (const r of rows) {
+    const list = byMachine.get(r.machineId) ?? [];
+    list.push({ createdAt: r.createdAt, checkName: r.checkName, resultData: r.resultData, status: r.status });
+    byMachine.set(r.machineId, list);
+  }
+
+  type Offender = {
+    machineId: string;
+    user: string;
+    usedCheckName: string;
+    latestSeenAt: string;
+    observedContinuousSince: string;
+    observedContinuousHours: number;
+    samplesConsidered: number;
+  };
+
+  type Insufficient = {
+    machineId: string;
+    reason: string;
+    details?: any;
+  };
+
+  const offenders: Offender[] = [];
+  const insufficient: Insufficient[] = [];
+
+  for (const machineId of machineIds) {
+    const list = byMachine.get(machineId) ?? [];
+    if (list.length === 0) {
+      insufficient.push({ machineId, reason: 'No USER_INFO results found in lookback window' });
+      continue;
+    }
+
+    // Choose the most recent USER_INFO sample that actually includes a current user.
+    let latestUser: string | null = null;
+    let latestSeenAt: Date | null = null;
+    let usedCheckName: string | null = null;
+    for (const r of list) {
+      const info = extractUserInfo(r.resultData);
+      if (info.currentUser) {
+        latestUser = info.currentUser;
+        latestSeenAt = r.createdAt;
+        usedCheckName = r.checkName;
+        break;
+      }
+    }
+
+    if (!latestUser || !latestSeenAt || !usedCheckName) {
+      insufficient.push({
+        machineId,
+        reason: 'No current user observed in lookback window',
+        details: { samples: list.length },
+      });
+      continue;
+    }
+
+    // Only evaluate continuity against the specific USER_INFO check we used to identify the current user.
+    // This prevents "breaks" from other configured user checks (e.g., "Last User Only") from creating false negatives.
+    const series = list.filter((r) => r.checkName === usedCheckName);
+    if (series.length === 0) {
+      insufficient.push({
+        machineId,
+        reason: 'No USER_INFO history found for the selected user check',
+        details: { usedCheckName, samples: list.length },
+      });
+      continue;
+    }
+
+    // Walk history (most recent -> older) until the session breaks (no-user or user changed).
+    // Track the oldest time we continuously observed the same user.
+    let observedSince = latestSeenAt;
+    let samplesConsidered = 0;
+    let brokeWithinWindow = false;
+    let reachedWindowStart = false;
+
+    for (const r of series) {
+      const info = extractUserInfo(r.resultData);
+      const u = info.currentUser ?? null;
+
+      // session break
+      if (!u || !usersMatch(u, latestUser)) {
+        // If this break is inside the requested window, then we DID observe a logoff/user-change.
+        if (r.createdAt >= windowStart) {
+          brokeWithinWindow = true;
+        }
+        break;
+      }
+
+      samplesConsidered += 1;
+      observedSince = r.createdAt;
+
+      if (r.createdAt <= windowStart) {
+        reachedWindowStart = true;
+        // We can stop early once we have enough evidence spanning the full window.
+        break;
+      }
+    }
+
+    if (brokeWithinWindow) {
+      continue; // not an offender
+    }
+
+    if (!reachedWindowStart) {
+      insufficient.push({
+        machineId,
+        reason: 'Insufficient USER_INFO history to prove continuous login for the full window',
+        details: {
+          hours,
+          lookbackHours,
+          latestSeenAt: latestSeenAt.toISOString(),
+          observedContinuousSince: observedSince.toISOString(),
+          samplesConsidered,
+        },
+      });
+      continue;
+    }
+
+    const observedContinuousHours = (now.getTime() - observedSince.getTime()) / (60 * 60 * 1000);
+    offenders.push({
+      machineId,
+      user: latestUser,
+      usedCheckName,
+      latestSeenAt: latestSeenAt.toISOString(),
+      observedContinuousSince: observedSince.toISOString(),
+      observedContinuousHours: Number(observedContinuousHours.toFixed(2)),
+      samplesConsidered,
+    });
+  }
+
+  return res.json({
+    hours,
+    lookbackHours,
+    windowStart: windowStart.toISOString(),
+    offenders,
+    insufficient,
+    notes: [
+      'This report is based on USER_INFO history; it flags machines where a current user was observed continuously for the full window.',
+      'If there is insufficient history in the window, a machine is listed under "insufficient" to avoid false positives.',
+    ],
+  });
+});
+
+// Configurable "warnings bucket" based on latest check results for selected checkTypes/statuses.
+// Intended to support dashboard alert groupings beyond "offline", "long sessions", and "high uptime".
+router.post('/warnings-bucket', async (req, res) => {
+  const body = (req.body ?? {}) as any;
+  const machineIds: string[] = Array.isArray(body.machineIds)
+    ? body.machineIds.filter((x: any): x is string => typeof x === 'string')
+    : [];
+  const checkTypesRaw = Array.isArray(body.checkTypes) ? body.checkTypes : [];
+  const statusesRaw = Array.isArray(body.statuses) ? body.statuses : [];
+  const lookbackRaw = body.lookbackHours;
+  const maxMatchesRaw = body.maxMatchesPerMachine;
+
+  if (machineIds.length === 0) {
+    return res.json({
+      machineIds: [],
+      checkTypes: [],
+      statuses: [],
+      lookbackHours: 0,
+      offenders: [],
+      insufficient: [],
+      truncated: false,
+      notes: [],
+    });
+  }
+  if (machineIds.length > 200) return res.status(400).json({ error: 'machineIds is too large' });
+
+  const allowedTypes = new Set(['REGISTRY_CHECK', 'FILE_CHECK', 'SERVICE_CHECK', 'USER_INFO', 'SYSTEM_INFO']);
+  const checkTypes = (checkTypesRaw.length ? checkTypesRaw : Array.from(allowedTypes))
+    .map((t: any) => String(t).toUpperCase())
+    .filter((t: string) => allowedTypes.has(t));
+  if (checkTypes.length === 0) return res.status(400).json({ error: 'checkTypes must include at least one valid type' });
+
+  const allowedStatuses = new Set(['FAILED', 'WARNING', 'TIMEOUT']);
+  const statuses = (statusesRaw.length ? statusesRaw : Array.from(allowedStatuses))
+    .map((s: any) => String(s).toUpperCase())
+    .filter((s: string) => allowedStatuses.has(s));
+  if (statuses.length === 0) return res.status(400).json({ error: 'statuses must include at least one valid status' });
+
+  const lookbackHours = (() => {
+    const v = Number(lookbackRaw);
+    if (!Number.isFinite(v) || v <= 0) return 48;
+    return Math.min(336, Math.max(1, Math.round(v)));
+  })();
+
+  const maxMatchesPerMachine = (() => {
+    const v = Number(maxMatchesRaw);
+    if (!Number.isFinite(v) || v <= 0) return 3;
+    return Math.min(10, Math.max(1, Math.round(v)));
+  })();
+
+  const now = new Date();
+  const lookbackStart = new Date(now.getTime() - lookbackHours * 60 * 60 * 1000);
+
+  const takeCap = Math.min(200000, machineIds.length * 2000);
+
+  const rows = await prisma.checkResult.findMany({
+    where: {
+      machineId: { in: machineIds },
+      checkType: { in: checkTypes as any },
+      status: { in: statuses as any },
+      createdAt: { gte: lookbackStart },
+    },
+    orderBy: [{ createdAt: 'desc' }],
+    take: takeCap,
+    select: {
+      machineId: true,
+      checkType: true,
+      checkName: true,
+      status: true,
+      message: true,
+      createdAt: true,
+    },
+  });
+
+  const truncated = rows.length >= takeCap;
+
+  // Latest per (machine, type, name) among matching statuses.
+  const seenKey = new Set<string>();
+  const byMachine = new Map<
+    string,
+    Array<{ checkType: string; checkName: string; status: string; message: string | null; createdAt: string }>
+  >();
+
+  for (const r of rows) {
+    const key = `${r.machineId}::${r.checkType}::${r.checkName}`;
+    if (seenKey.has(key)) continue;
+    seenKey.add(key);
+
+    const list = byMachine.get(r.machineId) ?? [];
+    if (list.length < maxMatchesPerMachine) {
+      list.push({
+        checkType: String(r.checkType),
+        checkName: r.checkName,
+        status: String(r.status),
+        message: r.message ?? null,
+        createdAt: r.createdAt.toISOString(),
+      });
+      byMachine.set(r.machineId, list);
+    }
+  }
+
+  const offenders = Array.from(byMachine.entries()).map(([machineId, matches]) => ({ machineId, matches }));
+  const offenderIds = new Set(offenders.map((o) => o.machineId));
+  const insufficient = machineIds
+    .filter((id) => !offenderIds.has(id))
+    .map((id) => ({ machineId: id, reason: 'No matching warning results in lookback window' }));
+
+  return res.json({
+    machineIds,
+    checkTypes,
+    statuses,
+    lookbackHours,
+    maxMatchesPerMachine,
+    lookbackStart: lookbackStart.toISOString(),
+    offenders,
+    insufficient,
+    truncated,
+    notes: [
+      'This endpoint finds latest results with matching statuses within the lookback window, grouped per machine.',
+      truncated ? 'Result set hit an internal cap; consider reducing lookbackHours or narrowing checkTypes.' : '',
+    ].filter(Boolean),
+  });
+});
+
 // List distinct "collected objects" (checkType + checkName) ever recorded.
-// - If `machineId` is provided: objects collected for that machine (used by PC Viewer filters)
+// - If `machineId` is provided: objects collected for that machine (used by PC History filters)
 // - If `scope=all`: objects collected across all machines (used by Dashboard column picker)
 router.get('/collected-objects', async (req, res) => {
   const { machineId, checkType, scope, includeConfig } = req.query;

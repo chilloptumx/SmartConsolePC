@@ -18,6 +18,8 @@ docker compose logs -f frontend
 Machine status is stored on `Machine.status` and is updated by the scheduler after checks run.
 If you want “online/offline” to be driven strictly by PING results, that requires an explicit mapping rule.
 
+> Note: `PING` in this app is **not ICMP ping**. It is a lightweight remote execution probe (WinRM) that answers: “can we successfully run a tiny PowerShell snippet on the machine?”
+
 ### No results appear in Dashboard columns
 Dashboard “dynamic columns” are populated from `/api/data/latest-results` for selected objects.
 If columns show `-`:

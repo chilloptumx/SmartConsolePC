@@ -4,23 +4,27 @@ Thorough documentation now lives in `app documentation/` (start with `app docume
 
 ## Smart Console PC Health Monitor
 
-I built **Smart Console PC Health Monitor** to track the health of Windows PCs and keep a clean history of what I’ve collected (registry checks, file checks, system info, users, and connectivity). Everything runs locally in Docker: **React UI**, **Node/Express API**, **PostgreSQL**, and **Redis**.
+I built **Smart Console PC Health Monitor** to track the health of Windows PCs and keep a clean history of what I’ve collected (registry checks, file checks, **service checks**, system info, users, and connectivity). Everything runs locally in Docker: **React UI**, **Node/Express API**, **PostgreSQL**, and **Redis**.
 
 ### What I can do in the UI
 
 - **Dashboard**: see each machine in a grid and trigger a full scan.
   - Click **Total / Online / Offline / Warnings** to filter the machine list
-  - Click a **PC name** to open PC Viewer pre-selected to that machine
+  - Click a **PC name** to open **PC History** (inside Data Viewer) pre-selected to that machine
 - **Configuration**:
   - Manage machines
   - Manage **Registry Checks** (add/edit/delete)
   - Manage **File Checks** (add/edit/delete)
+  - Manage **Service Checks** (add/edit/delete)
   - Manage **Email Reports**
   - Manage **Job Scheduler** (scheduled jobs + run now)
+  - Manage **Scan authentication** (optional DB override for WinRM credentials)
   - View effective Settings (SMTP + built-in checks)
-- **Data Viewer**: filter results and inspect values/types (registry + files).
-- **PC Viewer**: historical pivot view with date range + export (CSV/MD/HTML).
-- **Job Monitor**: audit trail of jobs + actions.
+- **Data Viewer** (hub):
+  - **PC History**: historical pivot view with date range + export (CSV/MD/HTML)
+  - **Job Monitor**: audit trail of jobs + actions
+  - **Results**: filter results and inspect values/types (registry + files + services)
+- **AdHoc Scan**: run an on-demand scan against a saved machine (or a one-off manual target) and export the result.
 
 ### Quick start (Windows + Docker Desktop)
 
@@ -107,6 +111,11 @@ DELETE /api/config/registry-checks/:id - Delete
 GET    /api/config/file-checks - List file checks
 POST   /api/config/file-checks - Create file check
 (Similar CRUD operations)
+
+GET    /api/config/service-checks - List service checks
+POST   /api/config/service-checks - Create service check
+PUT    /api/config/service-checks/:id - Update
+DELETE /api/config/service-checks/:id - Delete
 ```
 
 ### Scheduling
@@ -124,6 +133,8 @@ GET    /api/data/results          - Get check results (with filters)
 GET    /api/data/results/:id      - Get single result
 GET    /api/data/results/export   - Export as CSV
 GET    /api/data/stats            - Get statistics
+POST   /api/data/long-sessions    - Find machines with long-running logins (USER_INFO history)
+POST   /api/data/warnings-bucket  - Group latest warnings/failures per machine (lookback window)
 ```
 
 ### Reports
@@ -141,6 +152,7 @@ Key tables:
 - `machines`: Windows PCs being monitored
 - `registry_checks`: Registry paths to monitor
 - `file_checks`: File paths to monitor
+- `service_checks`: Windows services to monitor
 - `scheduled_jobs`: Cron-based job definitions
 - `check_results`: Historical check data
 - `email_reports`: Email report configurations

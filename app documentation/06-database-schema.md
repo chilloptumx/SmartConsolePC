@@ -29,6 +29,12 @@ The schema is defined in `backend/prisma/schema.prisma`.
   - `checkExists` determines whether existence is expected
   - Other flags exist but are currently informational (UI shows them)
 
+- **`service_checks`** (`ServiceCheck`)
+  - Windows service checks configured by:
+    - `serviceName` (Win32_Service.Name), and/or
+    - `executablePath` substring match against Win32_Service.PathName
+  - `expectedStatus` defaults to `"Running"`
+
 - **`user_checks`** (`UserCheck`) and **`system_checks`** (`SystemCheck`)
   - Support built-in modes and optional custom scripts
 
@@ -36,6 +42,18 @@ The schema is defined in `backend/prisma/schema.prisma`.
 - **`scheduled_jobs`** (`ScheduledJob`)
 - **`job_machines`** (`JobMachine`)
 - **`audit_events`** (`AuditEvent`)
+
+### JobType enum (check types)
+`check_results.checkType` and `scheduled_jobs.jobType` use the `JobType` enum.
+Current values include:
+- `PING`
+- `REGISTRY_CHECK`
+- `FILE_CHECK`
+- `SERVICE_CHECK`
+- `USER_INFO`
+- `SYSTEM_INFO`
+- `BASELINE_CHECK`
+- `FULL_CHECK`
 
 ### Migrations
 Prisma migrations live at:

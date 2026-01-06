@@ -29,6 +29,12 @@ File checks:
 - `PUT /api/config/file-checks/:id`
 - `DELETE /api/config/file-checks/:id`
 
+Service checks:
+- `GET /api/config/service-checks`
+- `POST /api/config/service-checks`
+- `PUT /api/config/service-checks/:id`
+- `DELETE /api/config/service-checks/:id`
+
 User checks:
 - `GET /api/config/user-checks`
 - `POST /api/config/user-checks`
@@ -51,6 +57,7 @@ Body:
   "builtIns": { "ping": true, "userInfo": true, "systemInfo": false },
   "registryCheckIds": ["uuid"],
   "fileCheckIds": ["uuid"],
+  "serviceCheckIds": ["uuid"],
   "userCheckIds": ["uuid"],
   "systemCheckIds": ["uuid"]
 }
@@ -69,6 +76,7 @@ Body:
   "builtIns": { "ping": true, "userInfo": true, "systemInfo": false },
   "registryCheckIds": ["uuid"],
   "fileCheckIds": ["uuid"],
+  "serviceCheckIds": ["uuid"],
   "userCheckIds": ["uuid"],
   "systemCheckIds": ["uuid"]
 }
@@ -83,7 +91,17 @@ Response returns `results[]` immediately and does **not** create a Machine recor
 - `GET /api/data/stats`
 - `GET /api/data/collected-objects`
 - `POST /api/data/latest-results`
+- `POST /api/data/long-sessions`
+- `POST /api/data/warnings-bucket`
 - `GET /api/data/users`
+
+### Settings (read-only + safe controls)
+- `GET /api/settings/smtp`
+- `GET /api/settings/checks`
+- `GET /api/settings/auth` (view effective WinRM auth; passwords are not returned)
+- `PUT /api/settings/auth` (optional DB override for WinRM auth)
+- `GET /api/settings/database` (redacted DB connection info + connectivity probe)
+- `POST /api/settings/database/purge` (purge runtime data: results + audit; preserves configuration)
 
 ### Schedules / jobs
 - `GET /api/schedules/jobs`
@@ -98,6 +116,17 @@ Response returns `results[]` immediately and does **not** create a Machine recor
 - `PUT /api/reports/:id`
 - `DELETE /api/reports/:id`
 - `POST /api/reports/:id/send-now`
+
+Email report payload (create/update) uses:
+- `recipients`: string[]
+- `schedule`: cron string
+- `columns`: string[] (subset of the email “table columns”, e.g. `"Machine"`, `"Status"`, `"Timestamp"`)
+- `filterConfig`: JSON object with optional fields like:
+  - `machineIds: string[]`
+  - `checkTypes: string[]`
+  - `status: string[]`
+  - `dateFrom: ISO string`
+  - `dateTo: ISO string`
 
 ### Monitor / audit
 - `GET /api/monitor/events`

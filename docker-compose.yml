@@ -79,6 +79,8 @@ services:
       # Use same-origin + Vite proxy for local Docker dev to avoid host-port mismatches (5000 vs 5001).
       # (This intentionally ignores any VITE_API_URL value in the root .env file.)
       VITE_API_URL: ""
+      # Ensure file changes on the Windows host trigger rebuilds inside the Linux container.
+      CHOKIDAR_USEPOLLING: "true"
     ports:
       - "${FRONTEND_HOST_PORT:-3001}:3000"
     volumes:

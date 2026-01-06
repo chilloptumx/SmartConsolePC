@@ -42,6 +42,19 @@ docker compose build --no-cache
 docker compose up -d --force-recreate
 ```
 
+### If frontend changes don’t show up (Docker Desktop + Windows)
+On Windows, Docker Desktop + bind mounts can sometimes fail to propagate file-watch events into Linux containers. When that happens, Vite keeps serving an older bundle even though files changed.
+
+This repo enables **polling** to make hot reload/rebuilds reliable:
+- `frontend/vite.config.ts`: `server.watch.usePolling = true`
+- `docker-compose.yml`: `CHOKIDAR_USEPOLLING=true` for the frontend service
+
+If you ever edit frontend code and the UI still looks unchanged:
+
+```powershell
+docker compose restart frontend
+```
+
 ### Why we don’t keep `node_modules/` or `dist/` in the repo
 The containers mount the source directories and use a dedicated `/app/node_modules` volume.
 Build output (`dist/`) is generated in-container via `npm run build` (backend) or Vite (frontend).

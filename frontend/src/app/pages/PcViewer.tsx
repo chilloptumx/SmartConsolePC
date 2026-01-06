@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { format, startOfMonth, endOfMonth, eachDayOfInterval, startOfDay, endOfDay, differenceInCalendarDays } from 'date-fns';
+import { ChevronDown, ChevronRight } from 'lucide-react';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Label } from '../components/ui/label';
@@ -310,6 +311,8 @@ export function PcViewer({ embedded = false }: { embedded?: boolean } = {}) {
 
   const [objects, setObjects] = useState<CollectedObject[]>([]);
   const [objectsLoading, setObjectsLoading] = useState<boolean>(false);
+  // Large UI section: collapsible by default to keep PC History focused on the grid.
+  const [filterObjectsOpen, setFilterObjectsOpen] = useState<boolean>(false);
   const [searchRegistry, setSearchRegistry] = useState<string>('');
   const [searchFile, setSearchFile] = useState<string>('');
   const [searchService, setSearchService] = useState<string>('');
@@ -440,7 +443,7 @@ export function PcViewer({ embedded = false }: { embedded?: boolean } = {}) {
   const getSelectedMachine = () => machines.find((m) => m.id === selectedMachineId);
   const getMachineLocationName = (m: any) => (m?.location?.name ? String(m.location.name) : 'Undefined');
 
-  // PcViewer object selection UI: match AdHocScan/Dashboard option selector style
+  // PC History object selection UI: match AdHocScan/Dashboard option selector style
   const filterObjects = (list: CollectedObject[], q: string) => {
     const needle = q.trim().toLowerCase();
     if (!needle) return list;
@@ -620,7 +623,7 @@ export function PcViewer({ embedded = false }: { embedded?: boolean } = {}) {
       }
 
       const lines: string[] = [];
-      lines.push(`# PC Viewer: ${machine.hostname} (${loc})`);
+      lines.push(`# PC History: ${machine.hostname} (${loc})`);
       lines.push('');
       lines.push(`- **Machine**: ${machine.hostname} (${loc})`);
       lines.push(`- **Location**: ${loc}`);
@@ -675,7 +678,7 @@ export function PcViewer({ embedded = false }: { embedded?: boolean } = {}) {
         return;
       }
 
-      const title = `PC Viewer: ${machine.hostname} (${loc})`;
+      const title = `PC History: ${machine.hostname} (${loc})`;
       const head = `
 <!doctype html>
 <html lang="en">
@@ -919,8 +922,8 @@ export function PcViewer({ embedded = false }: { embedded?: boolean } = {}) {
         </div>
       </Card>
 
-      <Card className="bg-slate-900 border-slate-800 p-6 mb-6">
-        <div className="flex items-center justify-between gap-4">
+      <Card className={`bg-slate-900 border-slate-800 ${filterObjectsOpen ? 'p-6' : 'p-4'} mb-6`}>
+        <div className="flex items-start justify-between gap-4">
           <div>
             <h2 className="text-lg font-medium text-slate-200">Filter Objects</h2>
             <p className="text-sm text-slate-400 mt-1">
@@ -930,9 +933,32 @@ export function PcViewer({ embedded = false }: { embedded?: boolean } = {}) {
               Selected <span className="text-slate-300">{selectedCount}</span> / <span className="text-slate-300">{totalCount}</span>
             </p>
           </div>
+          <Button
+            type="button"
+            variant="outline"
+            className="border-slate-700 bg-slate-950 hover:bg-slate-900 shrink-0"
+            onClick={() => setFilterObjectsOpen((v) => !v)}
+            aria-expanded={filterObjectsOpen}
+          >
+            {filterObjectsOpen ? (
+              <>
+                <ChevronDown className="w-4 h-4 mr-2" />
+                Hide
+              </>
+            ) : (
+              <>
+                <ChevronRight className="w-4 h-4 mr-2" />
+                Show
+              </>
+            )}
+          </Button>
         </div>
 
-        {objectsLoading ? (
+        {!filterObjectsOpen ? (
+          <div className="mt-3 text-sm text-slate-400">
+            Filters are collapsed. Click <span className="text-slate-200">Show</span> to change which objects appear in the grid.
+          </div>
+        ) : objectsLoading ? (
           <div className="mt-4 text-sm text-slate-400">Loading objects…</div>
         ) : totalCount === 0 ? (
           <div className="mt-4 text-sm text-slate-400">No collected objects found for this machine yet.</div>
@@ -1251,7 +1277,9 @@ export function PcViewer({ embedded = false }: { embedded?: boolean } = {}) {
                 <tr>
                   <td colSpan={days.length + 1} className="p-8 text-center text-slate-400">
                     {objects.length > 0 && Object.values(selectedObjectKeys).some(Boolean) === false
-                      ? 'No objects selected. Use the filter checkboxes above to choose what to display.'
+                      ? (filterObjectsOpen
+                          ? 'No objects selected. Use the filter checkboxes above to choose what to display.'
+                          : 'No objects selected. Click "Show" in Filter Objects to choose what to display.')
                       : 'No results found for this machine/month yet. Run a check to populate data.'}
                   </td>
                 </tr>

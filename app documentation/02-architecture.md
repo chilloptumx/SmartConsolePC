@@ -24,12 +24,12 @@
 ### Important backend files
 - **Routes**
   - `backend/src/routes/machines.ts`: CRUD + trigger manual check
-  - `backend/src/routes/config.ts`: CRUD for registry/file/user/system checks
+  - `backend/src/routes/config.ts`: CRUD for registry/file/service/user/system checks
   - `backend/src/routes/adhoc-scan.ts`: enqueue selected checks for machines
   - `backend/src/routes/data.ts`: results browsing + latest-results
 - **Services**
   - `backend/src/services/job-scheduler.ts`: Bull queue, job processor, check execution logic
-  - `backend/src/services/powershell-executor.ts`: WinRM + PowerShell commands
+  - `backend/src/services/powershell-executor.ts`: WinRM + PowerShell commands (registry/file/service/system/user)
   - `backend/src/services/registry-path.ts`: normalization and escaping helpers
   - `backend/src/services/check-evaluators.ts`: evaluates “exists/missing/expected value” and parses result data
 
@@ -37,7 +37,7 @@
 The UI treats any unique `(checkType, checkName)` recorded in `CheckResult` as a **collected object**.
 This powers:
 - Dashboard “dynamic columns”
-- PC Viewer object selector
+- PC History object selector (inside Data Viewer hub)
 
 Backend endpoint:
 - `GET /api/data/collected-objects` (per machine)

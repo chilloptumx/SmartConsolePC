@@ -1,4 +1,4 @@
-import { RefreshCw, Plus, TrendingUp, TrendingDown, Minus, Settings, Download } from 'lucide-react';
+import { RefreshCw, Plus, TrendingUp, Settings, Download, Clock, Power } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Card } from '../components/ui/card';
 import { StatusBadge } from '../components/StatusBadge';
@@ -27,7 +27,7 @@ export function Dashboard() {
   const [machines, setMachines] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
-  type StatusFilter = 'all' | 'online' | 'offline' | 'warnings';
+  type StatusFilter = 'all' | 'online' | 'offline' | 'longSessions' | 'highUptime' | 'warnings';
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   
   // Track which columns to display in the machine status table
@@ -63,6 +63,59 @@ export function Dashboard() {
   const [searchService, setSearchService] = useState('');
   const [searchUser, setSearchUser] = useState('');
   const [searchSystem, setSearchSystem] = useState('');
+  const [longSessionHours, setLongSessionHours] = useState<number>(12);
+  const [longSessionLoading, setLongSessionLoading] = useState(false);
+  const [longSessionError, setLongSessionError] = useState<string | null>(null);
+  const [longSessionByMachineId, setLongSessionByMachineId] = useState<
+    Record<
+      string,
+      {
+        machineId: string;
+        user: string;
+        usedCheckName: string;
+        latestSeenAt: string;
+        observedContinuousSince: string;
+        observedContinuousHours: number;
+        samplesConsidered: number;
+      }
+    >
+  >({});
+  const [longSessionInsufficientCount, setLongSessionInsufficientCount] = useState<number>(0);
+  const [highUptimeDays, setHighUptimeDays] = useState<number>(14);
+  const [uptimeLoading, setUptimeLoading] = useState(false);
+  const [uptimeError, setUptimeError] = useState<string | null>(null);
+  const [uptimeByMachineId, setUptimeByMachineId] = useState<Record<string, { uptimeDays: number | null; lastBootTime: string | null }>>({});
+  const [uptimeMissingCount, setUptimeMissingCount] = useState<number>(0);
+  type WarningsBucketConfig = {
+    include: {
+      REGISTRY_CHECK: boolean;
+      FILE_CHECK: boolean;
+      SERVICE_CHECK: boolean;
+      USER_INFO: boolean;
+      SYSTEM_INFO: boolean;
+    };
+    statuses: { FAILED: boolean; WARNING: boolean; TIMEOUT: boolean };
+    lookbackHours: number;
+    maxMatchesPerMachine: number;
+  };
+  const [warningsConfig, setWarningsConfig] = useState<WarningsBucketConfig>({
+    include: {
+      REGISTRY_CHECK: true,
+      FILE_CHECK: true,
+      SERVICE_CHECK: true,
+      USER_INFO: true,
+      SYSTEM_INFO: true,
+    },
+    statuses: { FAILED: true, WARNING: true, TIMEOUT: true },
+    lookbackHours: 48,
+    maxMatchesPerMachine: 3,
+  });
+  const [warningsLoading, setWarningsLoading] = useState(false);
+  const [warningsError, setWarningsError] = useState<string | null>(null);
+  const [warningsTruncated, setWarningsTruncated] = useState(false);
+  const [warningsByMachineId, setWarningsByMachineId] = useState<
+    Record<string, Array<{ checkType: string; checkName: string; status: string; message: string | null; createdAt: string }>>
+  >({});
 
   // Fetch data from API
   useEffect(() => {
@@ -81,6 +134,37 @@ export function Dashboard() {
           if (parsed.rebootThresholds && typeof parsed.rebootThresholds === 'object') {
             setRebootThresholds(normalizeRebootThresholds(parsed.rebootThresholds));
           }
+          if (parsed.longSessionHours !== undefined) {
+            const n = Number(parsed.longSessionHours);
+            if (Number.isFinite(n) && n > 0) setLongSessionHours(Math.max(1, Math.min(168, Math.round(n))));
+          }
+          if (parsed.highUptimeDays !== undefined) {
+            const n = Number(parsed.highUptimeDays);
+            if (Number.isFinite(n) && n >= 0) setHighUptimeDays(Math.max(0, Math.min(3650, n)));
+          }
+          if (parsed.warningsBucket && typeof parsed.warningsBucket === 'object') {
+            const wb = parsed.warningsBucket as any;
+            setWarningsConfig((prev) => ({
+              include: {
+                REGISTRY_CHECK: wb?.include?.REGISTRY_CHECK ?? prev.include.REGISTRY_CHECK,
+                FILE_CHECK: wb?.include?.FILE_CHECK ?? prev.include.FILE_CHECK,
+                SERVICE_CHECK: wb?.include?.SERVICE_CHECK ?? prev.include.SERVICE_CHECK,
+                USER_INFO: wb?.include?.USER_INFO ?? prev.include.USER_INFO,
+                SYSTEM_INFO: wb?.include?.SYSTEM_INFO ?? prev.include.SYSTEM_INFO,
+              },
+              statuses: {
+                FAILED: wb?.statuses?.FAILED ?? prev.statuses.FAILED,
+                WARNING: wb?.statuses?.WARNING ?? prev.statuses.WARNING,
+                TIMEOUT: wb?.statuses?.TIMEOUT ?? prev.statuses.TIMEOUT,
+              },
+              lookbackHours: Number.isFinite(Number(wb?.lookbackHours))
+                ? Math.min(336, Math.max(1, Math.round(Number(wb.lookbackHours))))
+                : prev.lookbackHours,
+              maxMatchesPerMachine: Number.isFinite(Number(wb?.maxMatchesPerMachine))
+                ? Math.min(10, Math.max(1, Math.round(Number(wb.maxMatchesPerMachine))))
+                : prev.maxMatchesPerMachine,
+            }));
+          }
         }
       }
     } catch {
@@ -88,6 +172,42 @@ export function Dashboard() {
     }
     loadData();
   }, []);
+
+  // Persist long-session hours immediately (so the filter control behaves like a real setting).
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem('dashboard.machineTableColumns');
+      const parsed = raw ? JSON.parse(raw) : {};
+      const base = parsed && typeof parsed === 'object' ? parsed : {};
+      localStorage.setItem('dashboard.machineTableColumns', JSON.stringify({ ...base, longSessionHours }));
+    } catch {
+      // ignore
+    }
+  }, [longSessionHours]);
+
+  // Persist uptime threshold immediately.
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem('dashboard.machineTableColumns');
+      const parsed = raw ? JSON.parse(raw) : {};
+      const base = parsed && typeof parsed === 'object' ? parsed : {};
+      localStorage.setItem('dashboard.machineTableColumns', JSON.stringify({ ...base, highUptimeDays }));
+    } catch {
+      // ignore
+    }
+  }, [highUptimeDays]);
+
+  // Persist warnings bucket config immediately.
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem('dashboard.machineTableColumns');
+      const parsed = raw ? JSON.parse(raw) : {};
+      const base = parsed && typeof parsed === 'object' ? parsed : {};
+      localStorage.setItem('dashboard.machineTableColumns', JSON.stringify({ ...base, warningsBucket: warningsConfig }));
+    } catch {
+      // ignore
+    }
+  }, [warningsConfig]);
 
   const loadData = async () => {
     try {
@@ -630,7 +750,18 @@ export function Dashboard() {
 
   const isOnlineMachine = (m: any) => m?.status === 'ONLINE' || m?.status === 'WARNING';
   const isOfflineMachine = (m: any) => m?.status === 'OFFLINE' || m?.status === 'UNKNOWN' || m?.status === 'ERROR';
-  const isWarningMachine = (m: any) => m?.status === 'WARNING';
+
+  const longSessionOffenderIds = useMemo(() => new Set(Object.keys(longSessionByMachineId)), [longSessionByMachineId]);
+  const highUptimeMachineIds = useMemo(() => {
+    const out = new Set<string>();
+    for (const [id, info] of Object.entries(uptimeByMachineId)) {
+      const u = info?.uptimeDays;
+      if (typeof u === 'number' && Number.isFinite(u) && u >= highUptimeDays) out.add(id);
+    }
+    return out;
+  }, [uptimeByMachineId, highUptimeDays]);
+
+  const warningsRawMachineIds = useMemo(() => new Set(Object.keys(warningsByMachineId)), [warningsByMachineId]);
 
   const filteredMachines = useMemo(() => {
     switch (statusFilter) {
@@ -638,12 +769,16 @@ export function Dashboard() {
         return machines.filter(isOnlineMachine);
       case 'offline':
         return machines.filter(isOfflineMachine);
+      case 'longSessions':
+        return machines.filter((m) => longSessionOffenderIds.has(String(m?.id)));
+      case 'highUptime':
+        return machines.filter((m) => highUptimeMachineIds.has(String(m?.id)));
       case 'warnings':
-        return machines.filter(isWarningMachine);
+        return machines.filter((m) => warningsRawMachineIds.has(String(m?.id)));
       default:
         return machines;
     }
-  }, [machines, statusFilter]);
+  }, [machines, statusFilter, longSessionOffenderIds, highUptimeMachineIds, warningsRawMachineIds]);
 
   const setFilter = (next: StatusFilter) => {
     if (next === 'all') {
@@ -657,6 +792,172 @@ export function Dashboard() {
     `w-full text-left bg-slate-900 border border-slate-800 p-6 rounded-xl cursor-pointer select-none hover:bg-slate-800/30 active:scale-[0.99] ${
       active ? 'ring-2 ring-cyan-500 ring-inset' : ''
     }`;
+
+  const formatRelative = (d?: any) => {
+    if (!d) return '';
+    const dt = new Date(d);
+    if (Number.isNaN(dt.getTime())) return '';
+    const deltaMs = Date.now() - dt.getTime();
+    const sec = Math.round(deltaMs / 1000);
+    if (sec < 0) return 'just now';
+    if (sec < 60) return `${sec}s ago`;
+    const min = Math.round(sec / 60);
+    if (min < 60) return `${min}m ago`;
+    const hr = Math.round(min / 60);
+    if (hr < 48) return `${hr}h ago`;
+    const day = Math.round(hr / 24);
+    return `${day}d ago`;
+  };
+
+  const lastCheckAt = useMemo(() => {
+    const times = machines.map((m) => m?.lastSeen).filter(Boolean);
+    if (times.length === 0) return null;
+    const max = Math.max(...times.map((t) => new Date(t).getTime()).filter((n) => Number.isFinite(n)));
+    if (!Number.isFinite(max)) return null;
+    return new Date(max);
+  }, [machines]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      if (machines.length === 0) {
+        setLongSessionByMachineId({});
+        setLongSessionInsufficientCount(0);
+        setLongSessionError(null);
+        return;
+      }
+      setLongSessionLoading(true);
+      setLongSessionError(null);
+      try {
+        const resp = await api.getLongSessions({
+          machineIds: machines.map((m) => m.id),
+          hours: longSessionHours,
+        });
+        if (cancelled) return;
+        const map: Record<string, any> = {};
+        for (const o of resp.offenders || []) {
+          if (o?.machineId) map[String(o.machineId)] = o;
+        }
+        setLongSessionByMachineId(map);
+        setLongSessionInsufficientCount(Array.isArray(resp.insufficient) ? resp.insufficient.length : 0);
+      } catch (e: any) {
+        if (cancelled) return;
+        console.error('Failed to load long sessions', e);
+        setLongSessionByMachineId({});
+        setLongSessionInsufficientCount(0);
+        setLongSessionError(e?.message || 'Failed to load long sessions');
+      } finally {
+        if (!cancelled) setLongSessionLoading(false);
+      }
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [machines, longSessionHours]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      if (machines.length === 0) {
+        setUptimeByMachineId({});
+        setUptimeMissingCount(0);
+        setUptimeError(null);
+        return;
+      }
+      setUptimeLoading(true);
+      setUptimeError(null);
+      try {
+        const { results } = await api.getLatestResultsForObjects({
+          machineIds: machines.map((m) => m.id),
+          objects: [{ checkType: 'SYSTEM_INFO', checkName: 'System Information' }],
+        });
+        if (cancelled) return;
+        const map: Record<string, { uptimeDays: number | null; lastBootTime: string | null }> = {};
+        const seen = new Set<string>();
+        for (const r of results || []) {
+          if (!r?.machineId) continue;
+          seen.add(String(r.machineId));
+          const { uptimeDays, lastBootTime } = parseUptimeInfo(r.resultData);
+          map[String(r.machineId)] = { uptimeDays, lastBootTime };
+        }
+        // Machines with no SYSTEM_INFO in latest-results are "missing" (or not yet collected).
+        const missing = machines.length - seen.size;
+        setUptimeByMachineId(map);
+        setUptimeMissingCount(missing > 0 ? missing : 0);
+      } catch (e: any) {
+        if (cancelled) return;
+        console.error('Failed to load system uptime info', e);
+        setUptimeByMachineId({});
+        setUptimeMissingCount(0);
+        setUptimeError(e?.message || 'Failed to load uptime');
+      } finally {
+        if (!cancelled) setUptimeLoading(false);
+      }
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [machines]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      if (machines.length === 0) {
+        setWarningsByMachineId({});
+        setWarningsError(null);
+        setWarningsTruncated(false);
+        return;
+      }
+
+      const checkTypes = Object.entries(warningsConfig.include)
+        .filter(([, v]) => v)
+        .map(([k]) => k);
+      const statuses = Object.entries(warningsConfig.statuses)
+        .filter(([, v]) => v)
+        .map(([k]) => k);
+
+      if (checkTypes.length === 0 || statuses.length === 0) {
+        setWarningsByMachineId({});
+        setWarningsError(null);
+        setWarningsTruncated(false);
+        return;
+      }
+
+      setWarningsLoading(true);
+      setWarningsError(null);
+      try {
+        const resp = await api.getWarningsBucket({
+          machineIds: machines.map((m) => m.id),
+          checkTypes,
+          statuses,
+          lookbackHours: warningsConfig.lookbackHours,
+          maxMatchesPerMachine: warningsConfig.maxMatchesPerMachine,
+        });
+        if (cancelled) return;
+        const map: Record<string, any[]> = {};
+        for (const o of resp.offenders || []) {
+          if (!o?.machineId) continue;
+          map[String(o.machineId)] = Array.isArray(o.matches) ? o.matches : [];
+        }
+        setWarningsByMachineId(map);
+        setWarningsTruncated(!!resp.truncated);
+      } catch (e: any) {
+        if (cancelled) return;
+        console.error('Failed to load warnings bucket', e);
+        setWarningsByMachineId({});
+        setWarningsTruncated(false);
+        setWarningsError(e?.message || 'Failed to load warnings bucket');
+      } finally {
+        if (!cancelled) setWarningsLoading(false);
+      }
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [machines, warningsConfig]);
 
   useEffect(() => {
     // Keep dashboard dynamic columns in sync with what is visible in the table.
@@ -676,7 +977,9 @@ export function Dashboard() {
     // (There is currently no separate "Errors" summary card.)
     online: machines.filter(isOnlineMachine).length,
     offline: machines.filter(isOfflineMachine).length,
-    warnings: machines.filter(isWarningMachine).length,
+    longSessions: longSessionOffenderIds.size,
+    highUptime: highUptimeMachineIds.size,
+    warnings: warningsRawMachineIds.size,
   };
 
   const badgeStatus = (status?: string) => {
@@ -808,7 +1111,7 @@ export function Dashboard() {
       </div>
 
       {/* Summary Cards */}
-      <div className="grid grid-cols-4 gap-6 mb-8">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-6 gap-6 mb-8">
         <button
           type="button"
           aria-pressed={statusFilter === 'all'}
@@ -820,7 +1123,7 @@ export function Dashboard() {
             <TrendingUp className="w-4 h-4 text-emerald-400" />
           </div>
           <div className="text-3xl font-semibold text-slate-200">{stats.total}</div>
-          <div className="text-xs text-emerald-400 mt-2">+2 this week</div>
+          <div className="text-xs text-slate-500 mt-2">Monitored fleet</div>
         </button>
 
         <button
@@ -834,7 +1137,9 @@ export function Dashboard() {
             <div className="w-2 h-2 bg-emerald-400 rounded-full" />
           </div>
           <div className="text-3xl font-semibold text-emerald-400">{stats.online}</div>
-          <div className="text-xs text-slate-400 mt-2">{Math.round((stats.online / stats.total) * 100)}% uptime</div>
+          <div className="text-xs text-slate-400 mt-2">
+            {stats.total > 0 ? `${Math.round((stats.online / stats.total) * 100)}% online` : '—'}
+          </div>
         </button>
 
         <button
@@ -853,6 +1158,46 @@ export function Dashboard() {
 
         <button
           type="button"
+          aria-pressed={statusFilter === 'longSessions'}
+          onClick={() => setFilter('longSessions')}
+          className={cardButtonClass(statusFilter === 'longSessions')}
+        >
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-slate-400 text-sm">Long sessions</span>
+            <Clock className="w-4 h-4 text-red-300" />
+          </div>
+          <div className="text-3xl font-semibold text-red-200">
+            {longSessionLoading ? '…' : stats.longSessions}
+          </div>
+          <div className="text-xs text-slate-500 mt-2">
+            ≥ {longSessionHours}h without logoff observed
+            {longSessionInsufficientCount > 0 ? ` · ${longSessionInsufficientCount} insufficient` : ''}
+            {longSessionError ? ' · error' : ''}
+          </div>
+        </button>
+
+        <button
+          type="button"
+          aria-pressed={statusFilter === 'highUptime'}
+          onClick={() => setFilter('highUptime')}
+          className={cardButtonClass(statusFilter === 'highUptime')}
+        >
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-slate-400 text-sm">High uptime</span>
+            <Power className="w-4 h-4 text-violet-300" />
+          </div>
+          <div className="text-3xl font-semibold text-violet-200">
+            {uptimeLoading ? '…' : stats.highUptime}
+          </div>
+          <div className="text-xs text-slate-500 mt-2">
+            ≥ {highUptimeDays}d uptime
+            {uptimeMissingCount > 0 ? ` · ${uptimeMissingCount} missing` : ''}
+            {uptimeError ? ' · error' : ''}
+          </div>
+        </button>
+
+        <button
+          type="button"
           aria-pressed={statusFilter === 'warnings'}
           onClick={() => setFilter('warnings')}
           className={cardButtonClass(statusFilter === 'warnings')}
@@ -861,8 +1206,12 @@ export function Dashboard() {
             <span className="text-slate-400 text-sm">Warnings</span>
             <div className="w-2 h-2 bg-amber-400 rounded-full animate-pulse" />
           </div>
-          <div className="text-3xl font-semibold text-amber-400">{stats.warnings}</div>
-          <div className="text-xs text-amber-400 mt-2">High resource usage</div>
+          <div className="text-3xl font-semibold text-amber-400">{warningsLoading ? '…' : stats.warnings}</div>
+          <div className="text-xs text-slate-500 mt-2">
+            Other checks (last {warningsConfig.lookbackHours}h)
+            {warningsTruncated ? ' · truncated' : ''}
+            {warningsError ? ' · error' : ''}
+          </div>
         </button>
       </div>
 
@@ -875,8 +1224,105 @@ export function Dashboard() {
               {statusFilter !== 'all' ? (
                 <div className="flex items-center gap-2">
                   <span className="text-xs px-2 py-1 rounded border border-slate-700 bg-slate-950 text-slate-300">
-                    Filter: {statusFilter}
+                    Filter:{' '}
+                    {statusFilter === 'longSessions'
+                      ? `long sessions (≥ ${longSessionHours}h)`
+                      : statusFilter === 'highUptime'
+                        ? `high uptime (≥ ${highUptimeDays}d)`
+                        : statusFilter === 'warnings'
+                          ? `warnings (other checks · last ${warningsConfig.lookbackHours}h)`
+                          : statusFilter}
                   </span>
+                  {statusFilter === 'longSessions' ? (
+                    <div className="flex items-center gap-2">
+                      <Label className="text-xs text-slate-400">Hours</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        max={168}
+                        step={1}
+                        value={longSessionHours}
+                        onChange={(e) => {
+                          const n = Number(e.target.value);
+                          if (!Number.isFinite(n)) return;
+                          setLongSessionHours(Math.max(1, Math.min(168, Math.round(n))));
+                        }}
+                        className="h-8 w-24 bg-slate-950 border-slate-800 text-slate-200"
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-8 border-slate-700 bg-slate-950 hover:bg-slate-900 text-slate-300 px-2"
+                        onClick={() => setLongSessionHours(12)}
+                      >
+                        12h
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-8 border-slate-700 bg-slate-950 hover:bg-slate-900 text-slate-300 px-2"
+                        onClick={() => setLongSessionHours(24)}
+                      >
+                        24h
+                      </Button>
+                    </div>
+                  ) : statusFilter === 'highUptime' ? (
+                    <div className="flex items-center gap-2">
+                      <Label className="text-xs text-slate-400">Days</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        max={3650}
+                        step={0.5}
+                        value={highUptimeDays}
+                        onChange={(e) => {
+                          const n = Number(e.target.value);
+                          if (!Number.isFinite(n)) return;
+                          setHighUptimeDays(Math.max(0, Math.min(3650, n)));
+                        }}
+                        className="h-8 w-24 bg-slate-950 border-slate-800 text-slate-200"
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-8 border-slate-700 bg-slate-950 hover:bg-slate-900 text-slate-300 px-2"
+                        onClick={() => setHighUptimeDays(7)}
+                      >
+                        7d
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-8 border-slate-700 bg-slate-950 hover:bg-slate-900 text-slate-300 px-2"
+                        onClick={() => setHighUptimeDays(14)}
+                      >
+                        14d
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-8 border-slate-700 bg-slate-950 hover:bg-slate-900 text-slate-300 px-2"
+                        onClick={() => setHighUptimeDays(30)}
+                      >
+                        30d
+                      </Button>
+                    </div>
+                  ) : statusFilter === 'warnings' ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-8 border-slate-700 bg-slate-950 hover:bg-slate-900 text-slate-300"
+                      onClick={() => setIsCardConfigOpen(true)}
+                    >
+                      Edit rules
+                    </Button>
+                  ) : null}
                   <Button
                     variant="outline"
                     size="sm"
@@ -889,7 +1335,14 @@ export function Dashboard() {
               ) : null}
             </div>
             <div className="flex items-center gap-3">
-              <span className="text-sm text-slate-400">Last check: 2 mins ago</span>
+              <span className="text-sm text-slate-400">
+                Last check:{' '}
+                {lastCheckAt ? (
+                  <span title={lastCheckAt.toLocaleString()}>{formatRelative(lastCheckAt)}</span>
+                ) : (
+                  '—'
+                )}
+              </span>
               <Dialog open={isExportOpen} onOpenChange={setIsExportOpen}>
                 <DialogTrigger asChild>
                   <Button variant="outline" size="sm" className="border-slate-700 bg-slate-950 hover:bg-slate-900">
@@ -953,7 +1406,7 @@ export function Dashboard() {
                     <Settings className="w-4 h-4" />
                   </Button>
                 </DialogTrigger>
-                <DialogContent className="bg-slate-900 border-slate-800 sm:max-w-[980px]">
+                <DialogContent className="bg-slate-900 border-slate-800 w-[95vw] sm:max-w-[980px] max-h-[90vh] overflow-y-auto overflow-x-hidden">
                   <DialogHeader>
                     <DialogTitle className="text-slate-100">Configure Machine Table Columns</DialogTitle>
                     <DialogDescription className="text-slate-400">
@@ -1045,6 +1498,138 @@ export function Dashboard() {
                             <div className="mt-3 text-xs text-slate-500">
                               Tip: set Warning=0 and Critical=0 to effectively disable highlighting.
                             </div>
+                          </div>
+
+                          <div className="rounded border border-slate-800 bg-slate-950 p-4">
+                            <div className="text-sm font-medium text-slate-200 mb-1">Warnings bucket (other checks)</div>
+                            <div className="text-xs text-slate-500 mb-3 leading-snug break-words">
+                              Counts machines with latest check results in selected statuses within the lookback window.
+                              Machines can appear in multiple cards (e.g., Offline and Warnings).
+                            </div>
+
+                            <div className="grid grid-cols-1 gap-2 text-[11px] leading-tight">
+                              <label className="flex items-start gap-2 text-slate-300">
+                                <Checkbox
+                                  checked={warningsConfig.include.FILE_CHECK}
+                                  onCheckedChange={(checked) =>
+                                    setWarningsConfig((prev) => ({ ...prev, include: { ...prev.include, FILE_CHECK: checked as boolean } }))
+                                  }
+                                />
+                                <span className="break-words">File checks</span>
+                              </label>
+                              <label className="flex items-start gap-2 text-slate-300">
+                                <Checkbox
+                                  checked={warningsConfig.include.REGISTRY_CHECK}
+                                  onCheckedChange={(checked) =>
+                                    setWarningsConfig((prev) => ({ ...prev, include: { ...prev.include, REGISTRY_CHECK: checked as boolean } }))
+                                  }
+                                />
+                                <span className="break-words">Registry checks</span>
+                              </label>
+                              <label className="flex items-start gap-2 text-slate-300">
+                                <Checkbox
+                                  checked={warningsConfig.include.SERVICE_CHECK}
+                                  onCheckedChange={(checked) =>
+                                    setWarningsConfig((prev) => ({ ...prev, include: { ...prev.include, SERVICE_CHECK: checked as boolean } }))
+                                  }
+                                />
+                                <span className="break-words">Service checks</span>
+                              </label>
+                              <label className="flex items-start gap-2 text-slate-300">
+                                <Checkbox
+                                  checked={warningsConfig.include.SYSTEM_INFO}
+                                  onCheckedChange={(checked) =>
+                                    setWarningsConfig((prev) => ({ ...prev, include: { ...prev.include, SYSTEM_INFO: checked as boolean } }))
+                                  }
+                                />
+                                <span className="break-words">System checks</span>
+                              </label>
+                              <label className="flex items-start gap-2 text-slate-300">
+                                <Checkbox
+                                  checked={warningsConfig.include.USER_INFO}
+                                  onCheckedChange={(checked) =>
+                                    setWarningsConfig((prev) => ({ ...prev, include: { ...prev.include, USER_INFO: checked as boolean } }))
+                                  }
+                                />
+                                <span className="break-words">User checks</span>
+                              </label>
+                            </div>
+
+                            <div className="mt-3 grid grid-cols-1 gap-2 text-[11px] leading-tight">
+                              <label className="flex items-start gap-2 text-slate-300">
+                                <Checkbox
+                                  checked={warningsConfig.statuses.FAILED}
+                                  onCheckedChange={(checked) =>
+                                    setWarningsConfig((prev) => ({ ...prev, statuses: { ...prev.statuses, FAILED: checked as boolean } }))
+                                  }
+                                />
+                                <span className="break-words">FAILED</span>
+                              </label>
+                              <label className="flex items-start gap-2 text-slate-300">
+                                <Checkbox
+                                  checked={warningsConfig.statuses.WARNING}
+                                  onCheckedChange={(checked) =>
+                                    setWarningsConfig((prev) => ({ ...prev, statuses: { ...prev.statuses, WARNING: checked as boolean } }))
+                                  }
+                                />
+                                <span className="break-words">WARNING</span>
+                              </label>
+                              <label className="flex items-start gap-2 text-slate-300">
+                                <Checkbox
+                                  checked={warningsConfig.statuses.TIMEOUT}
+                                  onCheckedChange={(checked) =>
+                                    setWarningsConfig((prev) => ({ ...prev, statuses: { ...prev.statuses, TIMEOUT: checked as boolean } }))
+                                  }
+                                />
+                                <span className="break-words">TIMEOUT</span>
+                              </label>
+                            </div>
+
+                            <div className="mt-3 grid grid-cols-2 gap-3">
+                              <div>
+                                <Label className="text-slate-300 text-xs">Lookback (hours)</Label>
+                                <Input
+                                  type="number"
+                                  min={1}
+                                  max={336}
+                                  step={1}
+                                  value={warningsConfig.lookbackHours}
+                                  onChange={(e) => {
+                                    const n = Number(e.target.value);
+                                    if (!Number.isFinite(n)) return;
+                                    setWarningsConfig((prev) => ({ ...prev, lookbackHours: Math.min(336, Math.max(1, Math.round(n))) }));
+                                  }}
+                                  className="mt-1 bg-slate-900 border-slate-800"
+                                />
+                              </div>
+                              <div>
+                                <Label className="text-slate-300 text-xs">Details per machine</Label>
+                                <Input
+                                  type="number"
+                                  min={1}
+                                  max={10}
+                                  step={1}
+                                  value={warningsConfig.maxMatchesPerMachine}
+                                  onChange={(e) => {
+                                    const n = Number(e.target.value);
+                                    if (!Number.isFinite(n)) return;
+                                    setWarningsConfig((prev) => ({ ...prev, maxMatchesPerMachine: Math.min(10, Math.max(1, Math.round(n))) }));
+                                  }}
+                                  className="mt-1 bg-slate-900 border-slate-800"
+                                />
+                              </div>
+                            </div>
+
+                            {warningsError ? (
+                              <div className="mt-3 text-xs text-red-300">
+                                Warning bucket error: {warningsError}
+                              </div>
+                            ) : null}
+                            {warningsTruncated ? (
+                              <div className="mt-2 text-xs text-amber-300">
+                                Note: Results were truncated. Reduce lookback or narrow types.
+                              </div>
+                            ) : null}
                           </div>
 
                           <div className="text-xs text-slate-500">
@@ -1349,7 +1934,7 @@ export function Dashboard() {
                         try {
                           localStorage.setItem(
                             'dashboard.machineTableColumns',
-                            JSON.stringify({ displayColumns, selectedObjectKeys, rebootThresholds })
+                            JSON.stringify({ displayColumns, selectedObjectKeys, rebootThresholds, longSessionHours, highUptimeDays, warningsBucket: warningsConfig })
                           );
                         } catch {
                           // ignore
@@ -1439,6 +2024,65 @@ export function Dashboard() {
                             {(machine as any).location?.name || 'Undefined'}
                           </span>
                         </div>
+                        {statusFilter === 'longSessions' && longSessionByMachineId[String(machine.id)] ? (
+                          <div className="mt-1 text-xs text-slate-400">
+                            <span className="font-mono text-slate-300">{longSessionByMachineId[String(machine.id)]!.user}</span>
+                            <span className="text-slate-500"> · </span>
+                            <span>
+                              observed since{' '}
+                              {new Date(longSessionByMachineId[String(machine.id)]!.observedContinuousSince).toLocaleString()}
+                            </span>
+                            <span className="text-slate-500"> · </span>
+                            <span>{longSessionByMachineId[String(machine.id)]!.observedContinuousHours}h</span>
+                          </div>
+                        ) : statusFilter === 'highUptime' && uptimeByMachineId[String(machine.id)] ? (
+                          <div className="mt-1 text-xs text-slate-400">
+                            <span className="text-slate-300">
+                              uptime{' '}
+                              {uptimeByMachineId[String(machine.id)]!.uptimeDays !== null
+                                ? `${Number(uptimeByMachineId[String(machine.id)]!.uptimeDays!.toFixed(2))}d`
+                                : '—'}
+                            </span>
+                            {uptimeByMachineId[String(machine.id)]!.lastBootTime ? (
+                              <>
+                                <span className="text-slate-500"> · </span>
+                                <span>
+                                  boot {formatLastBootTimeForDisplay(uptimeByMachineId[String(machine.id)]!.lastBootTime)}
+                                </span>
+                              </>
+                            ) : null}
+                          </div>
+                        ) : statusFilter === 'warnings' && warningsByMachineId[String(machine.id)]?.length ? (
+                          <div className="mt-1 text-xs text-slate-400">
+                            {(() => {
+                              const first = warningsByMachineId[String(machine.id)]![0];
+                              const when = first?.createdAt ? formatRelative(first.createdAt) : '';
+                              const head = `${first.checkType} · ${first.checkName}`;
+                              const msg = (first.message || '').trim();
+                              return (
+                                <>
+                                  <span className="text-slate-300">{first.status}</span>
+                                  <span className="text-slate-500"> · </span>
+                                  <span title={head}>{head}</span>
+                                  {when ? (
+                                    <>
+                                      <span className="text-slate-500"> · </span>
+                                      <span>{when}</span>
+                                    </>
+                                  ) : null}
+                                  {msg ? (
+                                    <>
+                                      <span className="text-slate-500"> · </span>
+                                      <span className="truncate" title={msg}>
+                                        {msg}
+                                      </span>
+                                    </>
+                                  ) : null}
+                                </>
+                              );
+                            })()}
+                          </div>
+                        ) : null}
                       </td>
                       <td className="p-4">
                         <StatusBadge status={badgeStatus(machine.status)} withDot>

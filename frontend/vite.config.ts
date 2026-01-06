@@ -21,6 +21,12 @@ export default defineConfig({
     port: 3000,
     strictPort: true,
     cors: true,
+    // Docker Desktop on Windows sometimes doesn't propagate file-watch events into Linux containers.
+    // Polling keeps HMR/rebuilds reliable so UI changes actually show up without restarting containers.
+    watch: {
+      usePolling: true,
+      interval: 150,
+    },
     proxy: {
       '/api': {
         target: 'http://backend:5000',
