@@ -47,6 +47,8 @@ export function DataViewerHub() {
           className={[
             'h-auto w-full items-stretch justify-start',
             'bg-slate-900 border border-slate-800 p-3 rounded-lg flex flex-col gap-1',
+            // Keep the menu above sticky/scrolling content inside the right pane
+            'relative z-20',
             'lg:w-72 lg:sticky lg:top-6 lg:max-h-[calc(100vh-8rem)] lg:overflow-auto',
           ].join(' ')}
         >
@@ -79,16 +81,17 @@ export function DataViewerHub() {
           </TabsTrigger>
         </TabsList>
 
-        <div className="lg:flex-1 space-y-6">
-          <TabsContent value="pc-history">
+        {/* Right pane: constrain width so wide tables scroll inside, not over the menu */}
+        <div className="lg:flex-1 min-w-0 w-full space-y-6 overflow-hidden">
+          <TabsContent value="pc-history" className="min-w-0">
             <PcViewer embedded />
           </TabsContent>
 
-          <TabsContent value="job-monitor">
+          <TabsContent value="job-monitor" className="min-w-0">
             <JobMonitor embedded />
           </TabsContent>
 
-          <TabsContent value="results">
+          <TabsContent value="results" className="min-w-0">
             <ResultsViewer />
           </TabsContent>
         </div>
