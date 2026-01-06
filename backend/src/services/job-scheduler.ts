@@ -706,6 +706,7 @@ async function processSingleMachine(machineId: string, jobType: string, checkCon
         {
           let anyFailed = false;
           let anyWarning = false;
+          let fullCheckPcModel: string | undefined;
 
           const ping = await pingMachine(connection);
           if (!ping.success) anyFailed = true;
@@ -721,40 +722,104 @@ async function processSingleMachine(machineId: string, jobType: string, checkCon
             },
           });
 
-          const sysInfo = await getSystemInfo(connection);
-          if (!sysInfo.success) anyFailed = true;
-          const sysInfoData = parseResultData(sysInfo.output);
-          const fullCheckPcModel = computePcModelFromSystemInfo(sysInfoData);
-          await prisma.checkResult.create({
-            data: {
-              machineId: machine.id,
-              checkType: 'SYSTEM_INFO',
-              checkName: 'System Information',
-              status: sysInfo.success ? 'SUCCESS' : 'FAILED',
-              resultData: sysInfoData,
-              message: sysInfo.error,
-              duration: sysInfo.duration,
-            },
+          // System checks (all active) — includes CUSTOM checks like "Local Administrators Members"
+          const systemChecks = await prisma.systemCheck.findMany({
+            where: { isActive: true },
+            orderBy: { name: 'asc' },
           });
+          for (const sc of systemChecks) {
+            let sysResult: PowerShellResult;
+            if (sc.checkType === 'CUSTOM' && sc.customScript) {
+              sysResult = await executePowerShell(sc.customScript, connection);
+            } else if (sc.checkType === 'SYSTEM_INFO') {
+              sysResult = await getSystemInfo(connection);
+            } else {
+              // Default to executing custom script if present; otherwise fall back to system info.
+              sysResult = sc.customScript ? await executePowerShell(sc.customScript, connection) : await getSystemInfo(connection);
+            }
 
-          const currentUser = await getCurrentUser(connection);
-          const lastUser = await getLastUser(connection);
-          const userSuccess = currentUser.success && lastUser.success;
-          if (!userSuccess) anyFailed = true;
-          await prisma.checkResult.create({
-            data: {
-              machineId: machine.id,
-              checkType: 'USER_INFO',
-              checkName: 'User Information',
-              status: userSuccess ? 'SUCCESS' : 'FAILED',
-              resultData: {
-                currentUser: currentUser.output,
-                lastUser: lastUser.output,
-              } as any,
-              message: currentUser.error || lastUser.error,
-              duration: currentUser.duration + lastUser.duration,
-            },
+            const sysData = parseResultData(sysResult.output);
+            const maybeModel = computePcModelFromSystemInfo(sysData);
+            if (maybeModel) fullCheckPcModel = maybeModel;
+
+            if (!sysResult.success) anyFailed = true;
+
+            await prisma.checkResult.create({
+              data: {
+                machineId: machine.id,
+                checkType: 'SYSTEM_INFO',
+                checkName: sc.name,
+                status: sysResult.success ? 'SUCCESS' : 'FAILED',
+                resultData: sysData,
+                message: sysResult.error,
+                duration: sysResult.duration,
+              },
+            });
+          }
+
+          // User checks (all active) — includes CUSTOM checks if enabled
+          const userChecks = await prisma.userCheck.findMany({
+            where: { isActive: true },
+            orderBy: { name: 'asc' },
           });
+          for (const uc of userChecks) {
+            let userResult: PowerShellResult;
+
+            if (uc.checkType === 'CURRENT_AND_LAST') {
+              const currentUser = await getCurrentUser(connection);
+              const lastUser = await getLastUser(connection);
+              userResult = {
+                success: currentUser.success && lastUser.success,
+                output: JSON.stringify({
+                  currentUser: currentUser.output,
+                  lastUser: lastUser.output,
+                }),
+                duration: currentUser.duration + lastUser.duration,
+              };
+            } else if (uc.checkType === 'CURRENT_ONLY') {
+              const currentUser = await getCurrentUser(connection);
+              userResult = {
+                success: currentUser.success,
+                output: JSON.stringify({ currentUser: currentUser.output }),
+                duration: currentUser.duration,
+              };
+            } else if (uc.checkType === 'LAST_ONLY') {
+              const lastUser = await getLastUser(connection);
+              userResult = {
+                success: lastUser.success,
+                output: JSON.stringify({ lastUser: lastUser.output }),
+                duration: lastUser.duration,
+              };
+            } else if (uc.checkType === 'CUSTOM' && uc.customScript) {
+              userResult = await executePowerShell(uc.customScript, connection);
+            } else {
+              // Default to CURRENT_AND_LAST
+              const currentUser = await getCurrentUser(connection);
+              const lastUser = await getLastUser(connection);
+              userResult = {
+                success: currentUser.success && lastUser.success,
+                output: JSON.stringify({
+                  currentUser: currentUser.output,
+                  lastUser: lastUser.output,
+                }),
+                duration: currentUser.duration + lastUser.duration,
+              };
+            }
+
+            if (!userResult.success) anyFailed = true;
+
+            await prisma.checkResult.create({
+              data: {
+                machineId: machine.id,
+                checkType: 'USER_INFO',
+                checkName: uc.name,
+                status: userResult.success ? 'SUCCESS' : 'FAILED',
+                resultData: parseResultData(userResult.output),
+                message: userResult.error,
+                duration: userResult.duration,
+              },
+            });
+          }
 
           // Registry checks
           const registryChecks = await prisma.registryCheck.findMany({
@@ -854,9 +919,25 @@ async function processSingleMachine(machineId: string, jobType: string, checkCon
             eventType: 'CHECK_EXECUTION_COMPLETED',
             message: `Completed FULL_CHECK for ${machine.hostname}`,
             machineId: machine.id,
-            metadata: { jobType: 'FULL_CHECK', registryChecks: registryChecks.length, fileChecks: fileChecks.length, serviceChecks: serviceChecks.length },
+            metadata: {
+              jobType: 'FULL_CHECK',
+              systemChecks: systemChecks.length,
+              userChecks: userChecks.length,
+              registryChecks: registryChecks.length,
+              fileChecks: fileChecks.length,
+              serviceChecks: serviceChecks.length,
+            },
           });
-          return { success: true, machineId, jobType, registryChecks: registryChecks.length, fileChecks: fileChecks.length, serviceChecks: serviceChecks.length };
+          return {
+            success: true,
+            machineId,
+            jobType,
+            systemChecks: systemChecks.length,
+            userChecks: userChecks.length,
+            registryChecks: registryChecks.length,
+            fileChecks: fileChecks.length,
+            serviceChecks: serviceChecks.length,
+          };
         }
 
       case 'BASELINE_CHECK':
