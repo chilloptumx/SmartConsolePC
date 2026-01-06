@@ -735,6 +735,128 @@ async function processSingleMachine(machineId: string, jobType: string, checkCon
           return { success: true, machineId, jobType, registryChecks: registryChecks.length, fileChecks: fileChecks.length };
         }
 
+      case 'BASELINE_CHECK':
+        // "Everything else" cadence: system checks + all registry checks + all file checks (NO ping/user).
+        // Store each result as its native checkType so UI filters and dynamic columns work.
+        {
+          let anyFailed = false;
+          let anyWarning = false;
+          let baselinePcModel: string | undefined;
+
+          // System checks (all active)
+          const systemChecks = await prisma.systemCheck.findMany({
+            where: { isActive: true },
+            orderBy: { name: 'asc' },
+          });
+          for (const sc of systemChecks) {
+            let sysResult: PowerShellResult;
+            if (sc.checkType === 'CUSTOM' && sc.customScript) {
+              sysResult = await executePowerShell(sc.customScript, connection);
+            } else if (sc.checkType === 'SYSTEM_INFO') {
+              sysResult = await getSystemInfo(connection);
+            } else {
+              // Default to executing custom script if present; otherwise fall back to system info.
+              sysResult = sc.customScript ? await executePowerShell(sc.customScript, connection) : await getSystemInfo(connection);
+            }
+
+            const sysData = parseResultData(sysResult.output);
+            const maybeModel = computePcModelFromSystemInfo(sysData);
+            if (maybeModel) baselinePcModel = maybeModel;
+
+            if (!sysResult.success) anyFailed = true;
+
+            await prisma.checkResult.create({
+              data: {
+                machineId: machine.id,
+                checkType: 'SYSTEM_INFO',
+                checkName: sc.name,
+                status: sysResult.success ? 'SUCCESS' : 'FAILED',
+                resultData: sysData,
+                message: sysResult.error,
+                duration: sysResult.duration,
+              },
+            });
+          }
+
+          // Registry checks
+          const registryChecks = await prisma.registryCheck.findMany({
+            where: { isActive: true },
+            orderBy: { name: 'asc' },
+          });
+          for (const rc of registryChecks) {
+            const r = await getRegistryValue(
+              connection,
+              normalizeRegistryPathForStorage(rc.registryPath),
+              normalizeValueName(rc.valueName)
+            );
+            const evaluated = evaluateRegistryCheckResult(
+              {
+                registryPath: normalizeRegistryPathForStorage(rc.registryPath),
+                valueName: normalizeValueName(rc.valueName) ?? null,
+                expectedValue: rc.expectedValue ?? null,
+              },
+              r
+            );
+            if (evaluated.status === 'FAILED') anyFailed = true;
+            if (evaluated.status === 'WARNING') anyWarning = true;
+
+            await prisma.checkResult.create({
+              data: {
+                machineId: machine.id,
+                checkType: 'REGISTRY_CHECK',
+                checkName: rc.name || 'Registry Check',
+                status: evaluated.status,
+                resultData: evaluated.data,
+                message: evaluated.message,
+                duration: r.duration,
+              },
+            });
+          }
+
+          // File checks
+          const fileChecks = await prisma.fileCheck.findMany({
+            where: { isActive: true },
+            orderBy: { name: 'asc' },
+          });
+          for (const fc of fileChecks) {
+            const r = await getFileInfo(connection, fc.filePath);
+            const evaluated = evaluateFileCheckResult({ filePath: fc.filePath, checkExists: fc.checkExists }, r);
+            if (evaluated.status === 'FAILED') anyFailed = true;
+            if (evaluated.status === 'WARNING') anyWarning = true;
+            await prisma.checkResult.create({
+              data: {
+                machineId: machine.id,
+                checkType: 'FILE_CHECK',
+                checkName: fc.name || 'File Check',
+                status: evaluated.status,
+                resultData: evaluated.data,
+                message: evaluated.message,
+                duration: r.duration,
+              },
+            });
+          }
+
+          await prisma.machine.update({
+            where: { id: machine.id },
+            data: {
+              status: anyFailed ? 'ERROR' : anyWarning ? 'WARNING' : 'ONLINE',
+              lastSeen: new Date(),
+              ...(baselinePcModel ? { pcModel: baselinePcModel } : {}),
+            },
+          });
+
+          logger.info(
+            `Completed BASELINE_CHECK suite for machine ${machine.hostname} (system=${systemChecks.length}, registry=${registryChecks.length}, file=${fileChecks.length})`
+          );
+          await logAuditEvent({
+            eventType: 'CHECK_EXECUTION_COMPLETED',
+            message: `Completed BASELINE_CHECK for ${machine.hostname}`,
+            machineId: machine.id,
+            metadata: { jobType: 'BASELINE_CHECK', systemChecks: systemChecks.length, registryChecks: registryChecks.length, fileChecks: fileChecks.length },
+          });
+          return { success: true, machineId, jobType, systemChecks: systemChecks.length, registryChecks: registryChecks.length, fileChecks: fileChecks.length };
+        }
+
       default:
         throw new Error(`Unknown job type: ${jobType}`);
     }

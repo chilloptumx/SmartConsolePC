@@ -15,6 +15,13 @@ export function Scheduling({ embedded = false }: { embedded?: boolean }) {
   const [machines, setMachines] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const [appCadenceSaving, setAppCadenceSaving] = useState(false);
+  const [pingCadence, setPingCadence] = useState('*/5 * * * *');
+  const [userCadence, setUserCadence] = useState('*/10 * * * *');
+  const [baselineCadence, setBaselineCadence] = useState('0 * * * *');
+  const [pingEnabled, setPingEnabled] = useState(true);
+  const [userEnabled, setUserEnabled] = useState(true);
+  const [baselineEnabled, setBaselineEnabled] = useState(true);
   
   // Form state
   const [jobName, setJobName] = useState('');
@@ -36,11 +43,81 @@ export function Scheduling({ embedded = false }: { embedded?: boolean }) {
       ]);
       setJobs(jobsData);
       setMachines(machinesData);
+
+      // Derive the "3 cadence" values from existing jobs if present.
+      const byType = (t: string) => jobsData.filter((j: any) => j?.jobType === t);
+      const pick = (t: string) => byType(t).find((j: any) => String(j?.name ?? '').toLowerCase().includes('smartconsole')) ?? byType(t)[0];
+
+      const pj = pick('PING');
+      if (pj?.cronExpression) setPingCadence(pj.cronExpression);
+      if (typeof pj?.isActive === 'boolean') setPingEnabled(pj.isActive);
+
+      const uj = pick('USER_INFO');
+      if (uj?.cronExpression) setUserCadence(uj.cronExpression);
+      if (typeof uj?.isActive === 'boolean') setUserEnabled(uj.isActive);
+
+      const bj = pick('BASELINE_CHECK');
+      if (bj?.cronExpression) setBaselineCadence(bj.cronExpression);
+      if (typeof bj?.isActive === 'boolean') setBaselineEnabled(bj.isActive);
     } catch (error) {
       console.error('Failed to load data:', error);
       toast.error('Failed to load scheduled jobs');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const upsertAppCadenceJob = async (jobType: string, name: string, cronExpression: string, isActive: boolean) => {
+    const existing = jobs.find((j: any) => j?.jobType === jobType && String(j?.name ?? '') === name);
+    if (existing) {
+      await api.updateScheduledJob(existing.id, { cronExpression, isActive, targetAll: true });
+      return existing.id;
+    }
+    const created = await api.createScheduledJob({ name, jobType, cronExpression, targetAll: true });
+    return created.id;
+  };
+
+  const applyAppCadences = async () => {
+    // Basic cron sanity check
+    const ok = (c: string) => String(c).trim().split(' ').length >= 5;
+    if (![pingCadence, userCadence, baselineCadence].every(ok)) {
+      toast.error('Invalid cron expression (expected at least 5 fields)');
+      return;
+    }
+
+    setAppCadenceSaving(true);
+    try {
+      const keep = new Set([
+        'SmartConsole: Ping cadence',
+        'SmartConsole: Logged-in user cadence',
+        'SmartConsole: Everything else cadence',
+      ]);
+
+      await upsertAppCadenceJob('PING', 'SmartConsole: Ping cadence', pingCadence, pingEnabled);
+      await upsertAppCadenceJob('USER_INFO', 'SmartConsole: Logged-in user cadence', userCadence, userEnabled);
+      await upsertAppCadenceJob('BASELINE_CHECK', 'SmartConsole: Everything else cadence', baselineCadence, baselineEnabled);
+
+      // Disable legacy/duplicate jobs that would cause double-execution of the same cadences.
+      // (We keep any non-overlapping job types like FULL_CHECK, and we keep your SmartConsole-named cadence jobs.)
+      const freshJobs = await api.getScheduledJobs();
+      const overlappingTypes = new Set(['PING', 'USER_INFO', 'SYSTEM_INFO', 'BASELINE_CHECK']);
+      const duplicates = freshJobs.filter(
+        (j: any) => overlappingTypes.has(j?.jobType) && !keep.has(String(j?.name ?? '')) && j?.isActive
+      );
+      for (const j of duplicates) {
+        await api.updateScheduledJob(j.id, { isActive: false });
+      }
+
+      if (duplicates.length > 0) {
+        toast.success(`Cadences applied (disabled ${duplicates.length} duplicate job${duplicates.length === 1 ? '' : 's'})`);
+      } else {
+        toast.success('Cadences applied');
+      }
+      await loadData();
+    } catch (e: any) {
+      toast.error(e?.message || 'Failed to apply cadences');
+    } finally {
+      setAppCadenceSaving(false);
     }
   };
 
@@ -113,7 +190,7 @@ export function Scheduling({ embedded = false }: { embedded?: boolean }) {
   ];
 
   const formatJobType = (type: string) => {
-    return type.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase());
+    return type.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, l => l.toUpperCase());
   };
 
   return (
@@ -169,6 +246,7 @@ export function Scheduling({ embedded = false }: { embedded?: boolean }) {
                       <SelectItem value="FILE_CHECK">File Check</SelectItem>
                       <SelectItem value="USER_INFO">User Info</SelectItem>
                       <SelectItem value="SYSTEM_INFO">System Info</SelectItem>
+                    <SelectItem value="BASELINE_CHECK">Everything Else (System + Registry + File)</SelectItem>
                       <SelectItem value="FULL_CHECK">Full Check (All)</SelectItem>
                     </SelectContent>
                   </Select>
@@ -225,6 +303,78 @@ export function Scheduling({ embedded = false }: { embedded?: boolean }) {
           </DialogContent>
         </Dialog>
       </div>
+
+      {/* Recommended 3-cadence setup */}
+      {embedded && (
+        <Card className="bg-slate-900 border-slate-800 p-6 mb-6">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h4 className="text-sm font-semibold text-slate-200">Cadence setup (recommended)</h4>
+              <p className="text-xs text-slate-400 mt-1">
+                Configure three independent schedules: <span className="text-slate-200">Ping</span>,{' '}
+                <span className="text-slate-200">Logged-in user</span>, and <span className="text-slate-200">Everything else</span>.
+              </p>
+            </div>
+            <Button
+              className="bg-cyan-600 hover:bg-cyan-700"
+              onClick={applyAppCadences}
+              disabled={appCadenceSaving}
+            >
+              Apply
+            </Button>
+          </div>
+
+          <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="rounded border border-slate-800 bg-slate-950 p-4">
+              <div className="flex items-center justify-between">
+                <div className="text-sm font-medium text-slate-200">Ping</div>
+                <Switch checked={pingEnabled} onCheckedChange={setPingEnabled} className="data-[state=checked]:bg-cyan-600" />
+              </div>
+              <div className="mt-3 space-y-2">
+                <Label className="text-xs text-slate-400">Cron</Label>
+                <Input
+                  value={pingCadence}
+                  onChange={(e) => setPingCadence(e.target.value)}
+                  className="bg-slate-900 border-slate-800 font-mono text-slate-200"
+                />
+              </div>
+            </div>
+
+            <div className="rounded border border-slate-800 bg-slate-950 p-4">
+              <div className="flex items-center justify-between">
+                <div className="text-sm font-medium text-slate-200">Logged-in user</div>
+                <Switch checked={userEnabled} onCheckedChange={setUserEnabled} className="data-[state=checked]:bg-cyan-600" />
+              </div>
+              <div className="mt-3 space-y-2">
+                <Label className="text-xs text-slate-400">Cron</Label>
+                <Input
+                  value={userCadence}
+                  onChange={(e) => setUserCadence(e.target.value)}
+                  className="bg-slate-900 border-slate-800 font-mono text-slate-200"
+                />
+              </div>
+            </div>
+
+            <div className="rounded border border-slate-800 bg-slate-950 p-4">
+              <div className="flex items-center justify-between">
+                <div className="text-sm font-medium text-slate-200">Everything else</div>
+                <Switch checked={baselineEnabled} onCheckedChange={setBaselineEnabled} className="data-[state=checked]:bg-cyan-600" />
+              </div>
+              <div className="mt-3 space-y-2">
+                <Label className="text-xs text-slate-400">Cron</Label>
+                <Input
+                  value={baselineCadence}
+                  onChange={(e) => setBaselineCadence(e.target.value)}
+                  className="bg-slate-900 border-slate-800 font-mono text-slate-200"
+                />
+                <div className="text-[11px] text-slate-500">
+                  Runs: System checks + Registry checks + File checks (no Ping/User)
+                </div>
+              </div>
+            </div>
+          </div>
+        </Card>
+      )}
 
       {/* Jobs Table */}
       <Card className="bg-slate-900 border-slate-800">
