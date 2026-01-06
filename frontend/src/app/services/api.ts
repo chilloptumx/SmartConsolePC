@@ -133,6 +133,31 @@ class ApiClient {
     });
   }
 
+  // Service Checks
+  async getServiceChecks() {
+    return this.request<any[]>('/api/config/service-checks');
+  }
+
+  async createServiceCheck(data: any) {
+    return this.request<any>('/api/config/service-checks', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async updateServiceCheck(id: string, data: any) {
+    return this.request<any>(`/api/config/service-checks/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deleteServiceCheck(id: string) {
+    return this.request<any>(`/api/config/service-checks/${id}`, {
+      method: 'DELETE',
+    });
+  }
+
   // User Checks
   async getUserChecks() {
     return this.request<any[]>('/api/config/user-checks');
@@ -280,6 +305,7 @@ class ApiClient {
     builtIns?: { ping?: boolean; userInfo?: boolean; systemInfo?: boolean };
     registryCheckIds?: string[];
     fileCheckIds?: string[];
+    serviceCheckIds?: string[];
     userCheckIds?: string[];
     systemCheckIds?: string[];
   }) {
@@ -300,6 +326,7 @@ class ApiClient {
     builtIns?: { ping?: boolean; userInfo?: boolean; systemInfo?: boolean };
     registryCheckIds?: string[];
     fileCheckIds?: string[];
+    serviceCheckIds?: string[];
     userCheckIds?: string[];
     systemCheckIds?: string[];
   }) {

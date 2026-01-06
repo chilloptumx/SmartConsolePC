@@ -71,10 +71,16 @@ function extractUserInfo(resultData: any): { currentUser?: string; lastUser?: st
 // - If `machineId` is provided: objects collected for that machine (used by PC Viewer filters)
 // - If `scope=all`: objects collected across all machines (used by Dashboard column picker)
 router.get('/collected-objects', async (req, res) => {
-  const { machineId, checkType, scope } = req.query;
+  const { machineId, checkType, scope, includeConfig } = req.query;
 
   const where: any = {};
   const isAll = scope === 'all';
+  const includeConfigured =
+    includeConfig === undefined
+      ? true
+      : Array.isArray(includeConfig)
+        ? includeConfig.some((v) => String(v).toLowerCase() === 'true' || v === '1')
+        : String(includeConfig).toLowerCase() === 'true' || includeConfig === '1';
 
   if (!isAll) {
     if (!machineId || Array.isArray(machineId)) {
@@ -95,15 +101,59 @@ router.get('/collected-objects', async (req, res) => {
     orderBy: [{ checkType: 'asc' }, { checkName: 'asc' }],
   });
 
-  res.json(
-    rows.map((r) => ({
-      checkType: r.checkType,
-      checkName: r.checkName,
-      total: r._count._all,
-      firstSeen: r._min.createdAt,
-      lastSeen: r._max.createdAt,
-    }))
-  );
+  const base = rows.map((r) => ({
+    checkType: r.checkType,
+    checkName: r.checkName,
+    total: r._count._all,
+    firstSeen: r._min.createdAt,
+    lastSeen: r._max.createdAt,
+  }));
+
+  // Optionally include configured checks even if they have never produced results yet.
+  // This makes new checks immediately selectable in viewers/column pickers.
+  if (!includeConfigured) {
+    return res.json(base);
+  }
+
+  const addConfigured = async () => {
+    const [registry, file, service, user, system] = await Promise.all([
+      prisma.registryCheck.findMany({ select: { name: true } }),
+      prisma.fileCheck.findMany({ select: { name: true } }),
+      // serviceCheck may not exist in older DBs; keep endpoint resilient.
+      (prisma as any).serviceCheck?.findMany
+        ? (prisma as any).serviceCheck.findMany({ select: { name: true } })
+        : Promise.resolve([]),
+      prisma.userCheck.findMany({ select: { name: true } }),
+      prisma.systemCheck.findMany({ select: { name: true } }),
+    ]);
+
+    const configured: Array<{ checkType: string; checkName: string }> = [];
+    for (const r of registry) configured.push({ checkType: 'REGISTRY_CHECK', checkName: r.name });
+    for (const f of file) configured.push({ checkType: 'FILE_CHECK', checkName: f.name });
+    for (const s of service) configured.push({ checkType: 'SERVICE_CHECK', checkName: s.name });
+    for (const u of user) configured.push({ checkType: 'USER_INFO', checkName: u.name });
+    for (const s of system) configured.push({ checkType: 'SYSTEM_INFO', checkName: s.name });
+    return configured;
+  };
+
+  const configured = await addConfigured();
+
+  // Merge base (from results) + configured (from config). If there are no results, totals remain 0.
+  const byKey = new Map<string, any>();
+  for (const o of base) byKey.set(`${o.checkType}::${o.checkName}`, o);
+  for (const o of configured) {
+    const key = `${o.checkType}::${o.checkName}`;
+    if (byKey.has(key)) continue;
+    byKey.set(key, { ...o, total: 0, firstSeen: null, lastSeen: null });
+  }
+
+  const merged = Array.from(byKey.values()).sort((a, b) => {
+    const at = `${a.checkType}::${a.checkName}`.toLowerCase();
+    const bt = `${b.checkType}::${b.checkName}`.toLowerCase();
+    return at.localeCompare(bt);
+  });
+
+  return res.json(merged);
 });
 
 // Fetch latest check result per machine for a selected set of collected objects.

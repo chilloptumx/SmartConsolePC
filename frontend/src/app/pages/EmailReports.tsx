@@ -219,6 +219,7 @@ export function EmailReports({ embedded = false }: { embedded?: boolean }) {
                         <SelectItem value="PING">Ping Only</SelectItem>
                         <SelectItem value="REGISTRY_CHECK">Registry Checks Only</SelectItem>
                         <SelectItem value="FILE_CHECK">File Checks Only</SelectItem>
+                        <SelectItem value="SERVICE_CHECK">Service Checks Only</SelectItem>
                         <SelectItem value="USER_INFO">User Info Only</SelectItem>
                         <SelectItem value="SYSTEM_INFO">System Info Only</SelectItem>
                       </SelectContent>

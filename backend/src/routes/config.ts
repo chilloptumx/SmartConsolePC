@@ -179,6 +179,100 @@ router.delete('/file-checks/:id', async (req, res) => {
   res.json({ success: true });
 });
 
+// ========== SERVICE CHECKS ==========
+
+// Get all service checks
+router.get('/service-checks', async (req, res) => {
+  const checks = await (prisma as any).serviceCheck.findMany({
+    orderBy: { name: 'asc' },
+  });
+  res.json(checks);
+});
+
+// Create service check
+router.post('/service-checks', async (req, res) => {
+  const { name, serviceName, executablePath, expectedStatus, description } = req.body;
+
+  const sn = typeof serviceName === 'string' ? serviceName.trim() : '';
+  const ep = typeof executablePath === 'string' ? executablePath.trim() : '';
+  const exp = typeof expectedStatus === 'string' ? expectedStatus.trim() : '';
+
+  if (!name || typeof name !== 'string' || !name.trim()) {
+    return res.status(400).json({ error: 'Name required' });
+  }
+  if (!sn && !ep) {
+    return res.status(400).json({ error: 'Provide at least one of serviceName or executablePath' });
+  }
+
+  const check = await (prisma as any).serviceCheck.create({
+    data: {
+      name: name.trim(),
+      serviceName: sn || null,
+      executablePath: ep || null,
+      expectedStatus: exp || 'Running',
+      description,
+    },
+  });
+
+  logger.info(`Created service check: ${check.name}`);
+  await logAuditEvent({
+    eventType: 'SERVICE_CHECK_CREATED',
+    message: `Service check created: ${check.name}`,
+    entityType: 'ServiceCheck',
+    entityId: check.id,
+    metadata: { id: check.id, name: check.name, serviceName: check.serviceName, executablePath: check.executablePath, expectedStatus: check.expectedStatus, isActive: check.isActive },
+  });
+  res.status(201).json(check);
+});
+
+// Update service check
+router.put('/service-checks/:id', async (req, res) => {
+  const { name, serviceName, executablePath, expectedStatus, description, isActive } = req.body;
+
+  const sn = typeof serviceName === 'string' ? serviceName.trim() : serviceName;
+  const ep = typeof executablePath === 'string' ? executablePath.trim() : executablePath;
+  const exp = typeof expectedStatus === 'string' ? expectedStatus.trim() : expectedStatus;
+
+  const check = await (prisma as any).serviceCheck.update({
+    where: { id: req.params.id },
+    data: {
+      ...(name && { name }),
+      ...(serviceName !== undefined && { serviceName: sn ? sn : null }),
+      ...(executablePath !== undefined && { executablePath: ep ? ep : null }),
+      ...(expectedStatus !== undefined && { expectedStatus: exp ? exp : 'Running' }),
+      ...(description !== undefined && { description }),
+      ...(isActive !== undefined && { isActive }),
+    },
+  });
+
+  await logAuditEvent({
+    eventType: 'SERVICE_CHECK_UPDATED',
+    message: `Service check updated: ${check.name}`,
+    entityType: 'ServiceCheck',
+    entityId: check.id,
+    metadata: { id: check.id, name, serviceName, executablePath, expectedStatus, description, isActive },
+  });
+  res.json(check);
+});
+
+// Delete service check
+router.delete('/service-checks/:id', async (req, res) => {
+  const existing = await (prisma as any).serviceCheck.findUnique({ where: { id: req.params.id } });
+  await (prisma as any).serviceCheck.delete({
+    where: { id: req.params.id },
+  });
+
+  logger.info(`Deleted service check: ${req.params.id}`);
+  await logAuditEvent({
+    eventType: 'SERVICE_CHECK_DELETED',
+    message: `Service check deleted: ${existing?.name ?? req.params.id}`,
+    entityType: 'ServiceCheck',
+    entityId: req.params.id,
+    metadata: { id: req.params.id, name: existing?.name, serviceName: existing?.serviceName, executablePath: existing?.executablePath },
+  });
+  res.json({ success: true });
+});
+
 // ========== USER CHECKS ==========
 
 // Get all user checks

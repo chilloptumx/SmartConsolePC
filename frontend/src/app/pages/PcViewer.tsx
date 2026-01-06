@@ -137,6 +137,18 @@ function summarizeResult(r?: CheckResult) {
       if (exists === false) return 'missing';
     }
 
+    if (r.checkType === 'SERVICE_CHECK') {
+      const svcState = (data as any).state ?? (data as any).status ?? (data as any).State;
+      const svcName = (data as any).name ?? (data as any).Name;
+      const matchedBy = (data as any).matchedBy ?? (data as any).MatchedBy;
+      if (exists === false) return 'missing';
+      const parts: string[] = [];
+      if (svcName) parts.push(String(svcName));
+      if (svcState) parts.push(String(svcState));
+      if (matchedBy) parts.push(`by=${String(matchedBy)}`);
+      return parts.length ? parts.join(' · ') : 'service';
+    }
+
     if (r.checkType === 'PING') {
       // Per user request: keep PING summary simple: success/failed (+ time).
       const ok =
@@ -286,7 +298,7 @@ function summarizeResult(r?: CheckResult) {
   return typeof data === 'string' ? data : '';
 }
 
-export function PcViewer() {
+export function PcViewer({ embedded = false }: { embedded?: boolean } = {}) {
   const [searchParams] = useSearchParams();
   const [machines, setMachines] = useState<any[]>([]);
   const [selectedMachineId, setSelectedMachineId] = useState<string>('');
@@ -300,6 +312,7 @@ export function PcViewer() {
   const [objectsLoading, setObjectsLoading] = useState<boolean>(false);
   const [searchRegistry, setSearchRegistry] = useState<string>('');
   const [searchFile, setSearchFile] = useState<string>('');
+  const [searchService, setSearchService] = useState<string>('');
   const [searchUser, setSearchUser] = useState<string>('');
   const [searchSystem, setSearchSystem] = useState<string>('');
   const [selectedObjectKeys, setSelectedObjectKeys] = useState<Record<string, boolean>>({});
@@ -321,7 +334,7 @@ export function PcViewer() {
     return eachDayOfInterval({ start, end });
   }, [rangeStart, rangeEnd]);
 
-  // Allow deep-linking to a specific machine, e.g. /pc-viewer?machineId=...
+  // Allow linking to a specific machine from the Dashboard, e.g. /data-viewer?tab=pc-history&machineId=...
   useEffect(() => {
     const machineIdFromUrl = searchParams.get('machineId');
     if (machineIdFromUrl && machineIdFromUrl !== selectedMachineId) {
@@ -358,10 +371,13 @@ export function PcViewer() {
       const list = await api.getCollectedObjects(selectedMachineId);
       setObjects(list);
 
-      // Default: select all collected objects for the machine
+      // Default: select only objects that have ever produced results for this machine.
+      // (Configured-but-never-run objects may be included by the API; keep the default grid usable.)
       const next: Record<string, boolean> = {};
       for (const o of list) {
-        next[makeRowKey(o.checkType, o.checkName)] = true;
+        const total = Number((o as any)?.total ?? 0);
+        const hasData = Number.isFinite(total) ? total > 0 : Boolean((o as any)?.lastSeen);
+        next[makeRowKey(o.checkType, o.checkName)] = hasData;
       }
       setSelectedObjectKeys(next);
     } catch (e) {
@@ -445,6 +461,7 @@ export function PcViewer() {
 
   const registryObjects = useMemo(() => objects.filter((o) => o.checkType === 'REGISTRY_CHECK'), [objects]);
   const fileObjects = useMemo(() => objects.filter((o) => o.checkType === 'FILE_CHECK'), [objects]);
+  const serviceObjects = useMemo(() => objects.filter((o) => o.checkType === 'SERVICE_CHECK'), [objects]);
   const userObjects = useMemo(() => objects.filter((o) => o.checkType === 'USER_INFO'), [objects]);
   // Per user request: group Ping under "System checks"
   const systemObjects = useMemo(
@@ -454,6 +471,7 @@ export function PcViewer() {
 
   const filteredRegistryObjects = useMemo(() => filterObjects(registryObjects, searchRegistry), [registryObjects, searchRegistry]);
   const filteredFileObjects = useMemo(() => filterObjects(fileObjects, searchFile), [fileObjects, searchFile]);
+  const filteredServiceObjects = useMemo(() => filterObjects(serviceObjects, searchService), [serviceObjects, searchService]);
   const filteredUserObjects = useMemo(() => filterObjects(userObjects, searchUser), [userObjects, searchUser]);
   const filteredSystemObjects = useMemo(() => filterObjects(systemObjects, searchSystem), [systemObjects, searchSystem]);
 
@@ -512,7 +530,7 @@ export function PcViewer() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `pc-viewer-${machine?.hostname || selectedMachineId}-${loc}-${dateFrom}_to_${dateTo}.csv`;
+      a.download = `pc-history-${machine?.hostname || selectedMachineId}-${loc}-${dateFrom}_to_${dateTo}.csv`;
       a.style.display = 'none';
       document.body.appendChild(a);
       a.click();
@@ -636,7 +654,7 @@ export function PcViewer() {
         lines.push('');
       }
 
-      const filename = `pc-viewer-${machine.hostname}-${loc}-${dateFrom}_to_${dateTo}.md`;
+      const filename = `pc-history-${machine.hostname}-${loc}-${dateFrom}_to_${dateTo}.md`;
       downloadTextFile(filename, lines.join('\n'), 'text/markdown;charset=utf-8');
       toast.success('MD exported');
     } catch (e) {
@@ -743,7 +761,7 @@ export function PcViewer() {
 `;
 
       const html = head + rowsHtml + tail;
-      const filename = `pc-viewer-${machine.hostname}-${loc}-${dateFrom}_to_${dateTo}.html`;
+      const filename = `pc-history-${machine.hostname}-${loc}-${dateFrom}_to_${dateTo}.html`;
       downloadTextFile(filename, html, 'text/html;charset=utf-8');
       toast.success('HTML exported');
     } catch (e) {
@@ -795,7 +813,7 @@ export function PcViewer() {
 
   const isNotFoundResult = (r?: CheckResult) => {
     if (!r) return false;
-    if (r.checkType !== 'REGISTRY_CHECK' && r.checkType !== 'FILE_CHECK') return false;
+    if (r.checkType !== 'REGISTRY_CHECK' && r.checkType !== 'FILE_CHECK' && r.checkType !== 'SERVICE_CHECK') return false;
     let data: any = r.resultData;
     if (typeof data === 'string') {
       const s = data.trim();
@@ -827,10 +845,10 @@ export function PcViewer() {
   };
 
   return (
-    <div className="p-8">
+    <div className={embedded ? '' : 'p-8'}>
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-3xl font-semibold">PC Viewer</h1>
+          <h1 className="text-3xl font-semibold">PC History</h1>
         </div>
         <div className="flex items-center gap-3">
           <Button
@@ -1012,6 +1030,62 @@ export function PcViewer() {
                   <div className="text-sm text-slate-500">No file objects collected yet.</div>
                 ) : (
                   filteredFileObjects.map((o) => {
+                    const key = makeRowKey(o.checkType, o.checkName);
+                    return (
+                      <label key={key} className="flex items-start gap-3">
+                        <Checkbox
+                          checked={!!selectedObjectKeys[key]}
+                          onCheckedChange={(checked) => setSelectedObjectKeys((prev) => ({ ...prev, [key]: checked as boolean }))}
+                        />
+                        <div className="min-w-0">
+                          <div className="text-slate-300 text-sm truncate" title={`${o.checkType} · ${o.checkName}`}>
+                            {o.checkName}
+                          </div>
+                          <div className="text-slate-500 text-xs font-mono truncate">{o.checkType}</div>
+                        </div>
+                      </label>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+
+            {/* Service */}
+            <div className="rounded border border-slate-800 bg-slate-950 p-4">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-sm font-medium text-slate-200">Service checks</div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="border-slate-700 bg-slate-950 hover:bg-slate-900"
+                    onClick={() => toggleAllObjects(serviceObjects, true)}
+                    disabled={serviceObjects.length === 0}
+                  >
+                    All
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="border-slate-700 bg-slate-950 hover:bg-slate-900"
+                    onClick={() => toggleAllObjects(serviceObjects, false)}
+                    disabled={serviceObjects.length === 0}
+                  >
+                    None
+                  </Button>
+                </div>
+              </div>
+              <Input
+                value={searchService}
+                onChange={(e) => setSearchService(e.target.value)}
+                placeholder="Search service checks…"
+                className="mt-3 bg-slate-900 border-slate-800"
+              />
+              <div className="mt-3 max-h-56 overflow-auto pr-1 space-y-2">
+                {serviceObjects.length === 0 ? (
+                  <div className="text-sm text-slate-500">No service objects collected yet.</div>
+                ) : (
+                  filteredServiceObjects.map((o) => {
                     const key = makeRowKey(o.checkType, o.checkName);
                     return (
                       <label key={key} className="flex items-start gap-3">

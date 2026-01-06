@@ -9,12 +9,13 @@ import {
   getFileInfo,
   getLastUser,
   getRegistryValue,
+  getServiceInfo,
   getSystemInfo,
   pingMachine,
   type ConnectionOptions,
   type PowerShellResult,
 } from '../services/powershell-executor.js';
-import { evaluateFileCheckResult, evaluateRegistryCheckResult, parseResultData } from '../services/check-evaluators.js';
+import { evaluateFileCheckResult, evaluateRegistryCheckResult, evaluateServiceCheckResult, parseResultData } from '../services/check-evaluators.js';
 
 const router = Router();
 
@@ -59,6 +60,7 @@ router.post('/run', async (req, res) => {
 
   const registryCheckIds = uniqStrings(body.registryCheckIds);
   const fileCheckIds = uniqStrings(body.fileCheckIds);
+  const serviceCheckIds = uniqStrings(body.serviceCheckIds);
   const userCheckIds = uniqStrings(body.userCheckIds);
   const systemCheckIds = uniqStrings(body.systemCheckIds);
 
@@ -70,12 +72,15 @@ router.post('/run', async (req, res) => {
   const missing = machineIds.filter((id) => !foundIds.has(id));
   if (missing.length) return res.status(404).json({ error: 'Some machines were not found', missingMachineIds: missing });
 
-  const [registryChecks, fileChecks, userChecks, systemChecks] = await Promise.all([
+  const [registryChecks, fileChecks, serviceChecks, userChecks, systemChecks] = await Promise.all([
     registryCheckIds.length
       ? prisma.registryCheck.findMany({ where: { id: { in: registryCheckIds } }, select: { id: true, name: true, isActive: true } })
       : Promise.resolve([]),
     fileCheckIds.length
       ? prisma.fileCheck.findMany({ where: { id: { in: fileCheckIds } }, select: { id: true, name: true, isActive: true } })
+      : Promise.resolve([]),
+    serviceCheckIds.length
+      ? (prisma as any).serviceCheck.findMany({ where: { id: { in: serviceCheckIds } }, select: { id: true, name: true, isActive: true } })
       : Promise.resolve([]),
     userCheckIds.length
       ? prisma.userCheck.findMany({ where: { id: { in: userCheckIds } }, select: { id: true, name: true, isActive: true } })
@@ -114,6 +119,11 @@ router.post('/run', async (req, res) => {
       expected.push({ machineId, checkType: 'FILE_CHECK', checkName: fc.name });
     }
 
+    for (const svc of serviceChecks) {
+      await triggerCheck(machineId, 'SERVICE_CHECK', { serviceCheckId: svc.id });
+      expected.push({ machineId, checkType: 'SERVICE_CHECK', checkName: svc.name });
+    }
+
     for (const uc of userChecks) {
       await triggerCheck(machineId, 'USER_INFO', { userCheckId: uc.id });
       expected.push({ machineId, checkType: 'USER_INFO', checkName: uc.name });
@@ -136,6 +146,7 @@ router.post('/run', async (req, res) => {
       selected: {
         registryCheckIds,
         fileCheckIds,
+        serviceCheckIds,
         userCheckIds,
         systemCheckIds,
       },
@@ -168,15 +179,17 @@ router.post('/run-direct', async (req, res) => {
 
   const registryCheckIds = uniqStrings(body.registryCheckIds);
   const fileCheckIds = uniqStrings(body.fileCheckIds);
+  const serviceCheckIds = uniqStrings(body.serviceCheckIds);
   const userCheckIds = uniqStrings(body.userCheckIds);
   const systemCheckIds = uniqStrings(body.systemCheckIds);
 
   if (registryCheckIds.length > 500) return res.status(400).json({ error: 'registryCheckIds is too large' });
   if (fileCheckIds.length > 500) return res.status(400).json({ error: 'fileCheckIds is too large' });
+  if (serviceCheckIds.length > 500) return res.status(400).json({ error: 'serviceCheckIds is too large' });
   if (userCheckIds.length > 500) return res.status(400).json({ error: 'userCheckIds is too large' });
   if (systemCheckIds.length > 500) return res.status(400).json({ error: 'systemCheckIds is too large' });
 
-  const [registryChecks, fileChecks, userChecks, systemChecks] = await Promise.all([
+  const [registryChecks, fileChecks, serviceChecks, userChecks, systemChecks] = await Promise.all([
     registryCheckIds.length
       ? prisma.registryCheck.findMany({
           where: { id: { in: registryCheckIds } },
@@ -187,6 +200,12 @@ router.post('/run-direct', async (req, res) => {
       ? prisma.fileCheck.findMany({
           where: { id: { in: fileCheckIds } },
           select: { id: true, name: true, isActive: true, filePath: true, checkExists: true },
+        })
+      : Promise.resolve([]),
+    serviceCheckIds.length
+      ? (prisma as any).serviceCheck.findMany({
+          where: { id: { in: serviceCheckIds } },
+          select: { id: true, name: true, isActive: true, serviceName: true, executablePath: true, expectedStatus: true },
         })
       : Promise.resolve([]),
     userCheckIds.length
@@ -239,6 +258,7 @@ router.post('/run-direct', async (req, res) => {
 
   for (const rc of registryChecks) expected.push({ machineId: targetId, checkType: 'REGISTRY_CHECK', checkName: rc.name });
   for (const fc of fileChecks) expected.push({ machineId: targetId, checkType: 'FILE_CHECK', checkName: fc.name });
+  for (const svc of serviceChecks) expected.push({ machineId: targetId, checkType: 'SERVICE_CHECK', checkName: svc.name });
   for (const uc of userChecks) expected.push({ machineId: targetId, checkType: 'USER_INFO', checkName: uc.name });
   for (const sc of systemChecks) expected.push({ machineId: targetId, checkType: 'SYSTEM_INFO', checkName: sc.name });
 
@@ -317,6 +337,24 @@ router.post('/run-direct', async (req, res) => {
       machineId: targetId,
       checkType: 'FILE_CHECK',
       checkName: fc.name,
+      status: evaluated.status,
+      resultData: evaluated.data,
+      message: evaluated.message ?? null,
+      duration: ps.duration,
+      createdAt: nowIso(),
+    });
+  }
+
+  for (const svc of serviceChecks) {
+    const ps = await getServiceInfo(connection, { serviceName: svc.serviceName, executablePath: svc.executablePath });
+    const evaluated = evaluateServiceCheckResult(
+      { serviceName: svc.serviceName, executablePath: svc.executablePath, expectedStatus: svc.expectedStatus },
+      ps
+    );
+    pushResult({
+      machineId: targetId,
+      checkType: 'SERVICE_CHECK',
+      checkName: svc.name,
       status: evaluated.status,
       resultData: evaluated.data,
       message: evaluated.message ?? null,
@@ -408,7 +446,7 @@ router.post('/run-direct', async (req, res) => {
       targetHost,
       targetId,
       builtIns: { ping: includePing, userInfo: includeUserInfo, systemInfo: includeSystemInfo },
-      selected: { registryCheckIds, fileCheckIds, userCheckIds, systemCheckIds },
+      selected: { registryCheckIds, fileCheckIds, serviceCheckIds, userCheckIds, systemCheckIds },
       expectedCount: expected.length,
       startedAt: startedAt.toISOString(),
       persisted: false,

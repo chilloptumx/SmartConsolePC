@@ -375,6 +375,83 @@ export async function getFileInfo(
 }
 
 /**
+ * Get Windows service information by service name and/or executable path matcher.
+ * - If serviceName is provided, it is tried first (Win32_Service.Name).
+ * - If executablePath is provided, Win32_Service.PathName is searched for a substring match.
+ *
+ * Always returns JSON (even on error) so downstream storage/UI stays consistent.
+ */
+export async function getServiceInfo(
+  connection: ConnectionOptions,
+  params: { serviceName?: string | null; executablePath?: string | null }
+): Promise<PowerShellResult> {
+  const rawName = (params?.serviceName ?? '').toString().trim();
+  const rawExe = (params?.executablePath ?? '').toString().trim();
+
+  const safeName = escapePsSingleQuotedString(rawName);
+  const safeExe = escapePsSingleQuotedString(rawExe);
+
+  const command = `
+    $serviceName = '${safeName}'
+    $exePath = '${safeExe}'
+
+    $result = @{}
+    $result.query = @{
+      serviceName = $serviceName
+      executablePath = $exePath
+    }
+
+    try {
+      $svc = $null
+      $matchedBy = $null
+
+      if ($serviceName) {
+        $sn = $serviceName -replace "'", "''"
+        $svc = Get-CimInstance Win32_Service -Filter "Name='$sn'" -ErrorAction SilentlyContinue
+        if ($svc) { $matchedBy = 'serviceName' }
+      }
+
+      if (-not $svc -and $exePath) {
+        $needle = $exePath.ToLowerInvariant()
+        # Enumerate services and match PathName; supports quoting/args in PathName.
+        $all = Get-CimInstance Win32_Service -ErrorAction SilentlyContinue
+        $match = $all | Where-Object {
+          $p = $_.PathName
+          if (-not $p) { return $false }
+          return $p.ToString().ToLowerInvariant().Contains($needle)
+        } | Select-Object -First 1
+
+        if ($match) {
+          $svc = $match
+          $matchedBy = 'executablePath'
+        }
+      }
+
+      if ($svc) {
+        $result.exists = $true
+        $result.matchedBy = $matchedBy
+        $result.name = $svc.Name
+        $result.displayName = $svc.DisplayName
+        $result.state = $svc.State
+        $result.status = $svc.State
+        $result.startMode = $svc.StartMode
+        $result.pathName = $svc.PathName
+        $result.processId = $svc.ProcessId
+      } else {
+        $result.exists = $false
+      }
+    } catch {
+      $result.exists = $false
+      $result.error = $_.Exception.Message
+    }
+
+    $result | ConvertTo-Json -Depth 6
+  `;
+
+  return executePowerShell(command, connection);
+}
+
+/**
  * Get currently logged-in user
  */
 export async function getCurrentUser(connection: ConnectionOptions): Promise<PowerShellResult> {

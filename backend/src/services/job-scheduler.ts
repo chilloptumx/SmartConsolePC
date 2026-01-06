@@ -6,6 +6,7 @@ import {
   pingMachine,
   getRegistryValue,
   getFileInfo,
+  getServiceInfo,
   getCurrentUser,
   getLastUser,
   getSystemInfo,
@@ -15,7 +16,7 @@ import {
 } from './powershell-executor.js';
 import { normalizeRegistryPathForStorage, normalizeValueName } from './registry-path.js';
 import { logAuditEvent } from './audit.js';
-import { evaluateFileCheckResult, evaluateRegistryCheckResult, parseResultData } from './check-evaluators.js';
+import { evaluateFileCheckResult, evaluateRegistryCheckResult, evaluateServiceCheckResult, parseResultData } from './check-evaluators.js';
 
 function computePcModelFromSystemInfo(data: any): string | undefined {
   if (!data || typeof data !== 'object') return undefined;
@@ -318,6 +319,103 @@ async function processSingleMachine(machineId: string, jobType: string, checkCon
           return { success: true, machineId, jobType, checksRun: 1 };
         }
 
+      case 'SERVICE_CHECK':
+        // If no specific service check was provided, run ALL active service checks.
+        if (!checkConfig?.serviceCheckId && !checkConfig?.serviceName && !checkConfig?.executablePath) {
+          const serviceChecks = await (prisma as any).serviceCheck.findMany({
+            where: { isActive: true },
+            orderBy: { name: 'asc' },
+          });
+
+          if (serviceChecks.length === 0) {
+            throw new Error('No active service checks configured');
+          }
+
+          let anyFailed = false;
+          let anyWarning = false;
+
+          for (const sc of serviceChecks) {
+            const r = await getServiceInfo(connection, { serviceName: sc.serviceName, executablePath: sc.executablePath });
+            const evaluated = evaluateServiceCheckResult(
+              { serviceName: sc.serviceName, executablePath: sc.executablePath, expectedStatus: sc.expectedStatus },
+              r
+            );
+            if (evaluated.status === 'FAILED') anyFailed = true;
+            if (evaluated.status === 'WARNING') anyWarning = true;
+
+            await prisma.checkResult.create({
+              data: {
+                machineId: machine.id,
+                checkType: jobType,
+                checkName: sc.name || 'Service Check',
+                status: evaluated.status,
+                resultData: evaluated.data,
+                message: evaluated.message,
+                duration: r.duration,
+              },
+            });
+          }
+
+          await prisma.machine.update({
+            where: { id: machine.id },
+            data: {
+              status: anyFailed ? 'ERROR' : anyWarning ? 'WARNING' : 'ONLINE',
+              lastSeen: new Date(),
+            },
+          });
+
+          logger.info(`Completed SERVICE_CHECK checks (${serviceChecks.length}) for machine ${machine.hostname}`);
+          return { success: true, machineId, jobType, checksRun: serviceChecks.length };
+        }
+
+        // Allow single service check execution by id (preferred by AdHocScan)
+        if (checkConfig?.serviceCheckId && !checkConfig?.serviceName && !checkConfig?.executablePath) {
+          const sc = await (prisma as any).serviceCheck.findUnique({ where: { id: checkConfig.serviceCheckId } });
+          if (!sc) throw new Error(`Service check not found: ${checkConfig.serviceCheckId}`);
+          checkConfig = {
+            ...checkConfig,
+            name: sc.name,
+            serviceName: sc.serviceName,
+            executablePath: sc.executablePath,
+            expectedStatus: sc.expectedStatus,
+          };
+        }
+
+        result = await getServiceInfo(connection, {
+          serviceName: checkConfig.serviceName,
+          executablePath: checkConfig.executablePath,
+        });
+        {
+          const evaluated = evaluateServiceCheckResult(
+            { serviceName: checkConfig.serviceName, executablePath: checkConfig.executablePath, expectedStatus: checkConfig.expectedStatus },
+            result
+          );
+          checkName = checkConfig.name || 'Service Check';
+
+          await prisma.checkResult.create({
+            data: {
+              machineId: machine.id,
+              checkType: jobType as any,
+              checkName,
+              status: evaluated.status,
+              resultData: evaluated.data,
+              message: evaluated.message,
+              duration: result.duration,
+            },
+          });
+
+          await prisma.machine.update({
+            where: { id: machine.id },
+            data: {
+              status: evaluated.status === 'FAILED' ? 'ERROR' : evaluated.status === 'WARNING' ? 'WARNING' : 'ONLINE',
+              lastSeen: new Date(),
+            },
+          });
+
+          logger.info(`Completed SERVICE_CHECK check (${checkName}) for machine ${machine.hostname}`);
+          return { success: true, machineId, jobType, checksRun: 1 };
+        }
+
       case 'USER_INFO':
         // Allow single configured user check execution by id (preferred by AdHocScan)
         if (checkConfig?.userCheckId) {
@@ -603,7 +701,7 @@ async function processSingleMachine(machineId: string, jobType: string, checkCon
         break;
 
       case 'FULL_CHECK':
-        // Run a full suite: ping + system + user + all registry checks + all file checks.
+        // Run a full suite: ping + system + user + all registry checks + all file checks + all service checks.
         // Store each result as its native checkType so the UI filters work as expected.
         {
           let anyFailed = false;
@@ -716,6 +814,32 @@ async function processSingleMachine(machineId: string, jobType: string, checkCon
             });
           }
 
+          // Service checks
+          const serviceChecks = await (prisma as any).serviceCheck.findMany({
+            where: { isActive: true },
+            orderBy: { name: 'asc' },
+          });
+          for (const sc of serviceChecks) {
+            const r = await getServiceInfo(connection, { serviceName: sc.serviceName, executablePath: sc.executablePath });
+            const evaluated = evaluateServiceCheckResult(
+              { serviceName: sc.serviceName, executablePath: sc.executablePath, expectedStatus: sc.expectedStatus },
+              r
+            );
+            if (evaluated.status === 'FAILED') anyFailed = true;
+            if (evaluated.status === 'WARNING') anyWarning = true;
+            await prisma.checkResult.create({
+              data: {
+                machineId: machine.id,
+                checkType: 'SERVICE_CHECK',
+                checkName: sc.name || 'Service Check',
+                status: evaluated.status,
+                resultData: evaluated.data,
+                message: evaluated.message,
+                duration: r.duration,
+              },
+            });
+          }
+
           await prisma.machine.update({
             where: { id: machine.id },
             data: {
@@ -730,13 +854,13 @@ async function processSingleMachine(machineId: string, jobType: string, checkCon
             eventType: 'CHECK_EXECUTION_COMPLETED',
             message: `Completed FULL_CHECK for ${machine.hostname}`,
             machineId: machine.id,
-            metadata: { jobType: 'FULL_CHECK', registryChecks: registryChecks.length, fileChecks: fileChecks.length },
+            metadata: { jobType: 'FULL_CHECK', registryChecks: registryChecks.length, fileChecks: fileChecks.length, serviceChecks: serviceChecks.length },
           });
-          return { success: true, machineId, jobType, registryChecks: registryChecks.length, fileChecks: fileChecks.length };
+          return { success: true, machineId, jobType, registryChecks: registryChecks.length, fileChecks: fileChecks.length, serviceChecks: serviceChecks.length };
         }
 
       case 'BASELINE_CHECK':
-        // "Everything else" cadence: system checks + all registry checks + all file checks (NO ping/user).
+        // "Everything else" cadence: system checks + all registry checks + all file checks + all service checks (NO ping/user).
         // Store each result as its native checkType so UI filters and dynamic columns work.
         {
           let anyFailed = false;
@@ -836,6 +960,32 @@ async function processSingleMachine(machineId: string, jobType: string, checkCon
             });
           }
 
+          // Service checks
+          const serviceChecks = await (prisma as any).serviceCheck.findMany({
+            where: { isActive: true },
+            orderBy: { name: 'asc' },
+          });
+          for (const sc of serviceChecks) {
+            const r = await getServiceInfo(connection, { serviceName: sc.serviceName, executablePath: sc.executablePath });
+            const evaluated = evaluateServiceCheckResult(
+              { serviceName: sc.serviceName, executablePath: sc.executablePath, expectedStatus: sc.expectedStatus },
+              r
+            );
+            if (evaluated.status === 'FAILED') anyFailed = true;
+            if (evaluated.status === 'WARNING') anyWarning = true;
+            await prisma.checkResult.create({
+              data: {
+                machineId: machine.id,
+                checkType: 'SERVICE_CHECK',
+                checkName: sc.name || 'Service Check',
+                status: evaluated.status,
+                resultData: evaluated.data,
+                message: evaluated.message,
+                duration: r.duration,
+              },
+            });
+          }
+
           await prisma.machine.update({
             where: { id: machine.id },
             data: {
@@ -846,15 +996,15 @@ async function processSingleMachine(machineId: string, jobType: string, checkCon
           });
 
           logger.info(
-            `Completed BASELINE_CHECK suite for machine ${machine.hostname} (system=${systemChecks.length}, registry=${registryChecks.length}, file=${fileChecks.length})`
+            `Completed BASELINE_CHECK suite for machine ${machine.hostname} (system=${systemChecks.length}, registry=${registryChecks.length}, file=${fileChecks.length}, service=${serviceChecks.length})`
           );
           await logAuditEvent({
             eventType: 'CHECK_EXECUTION_COMPLETED',
             message: `Completed BASELINE_CHECK for ${machine.hostname}`,
             machineId: machine.id,
-            metadata: { jobType: 'BASELINE_CHECK', systemChecks: systemChecks.length, registryChecks: registryChecks.length, fileChecks: fileChecks.length },
+            metadata: { jobType: 'BASELINE_CHECK', systemChecks: systemChecks.length, registryChecks: registryChecks.length, fileChecks: fileChecks.length, serviceChecks: serviceChecks.length },
           });
-          return { success: true, machineId, jobType, systemChecks: systemChecks.length, registryChecks: registryChecks.length, fileChecks: fileChecks.length };
+          return { success: true, machineId, jobType, systemChecks: systemChecks.length, registryChecks: registryChecks.length, fileChecks: fileChecks.length, serviceChecks: serviceChecks.length };
         }
 
       default:

@@ -22,7 +22,7 @@ type MonitorEvent = {
   details: any;
 };
 
-export function JobMonitor() {
+export function JobMonitor({ embedded = false }: { embedded?: boolean } = {}) {
   const navigate = useNavigate();
   const [machines, setMachines] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
@@ -96,7 +96,7 @@ export function JobMonitor() {
   };
 
   return (
-    <div className="p-8">
+    <div className={embedded ? '' : 'p-8'}>
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-3xl font-semibold">Job Monitor</h1>

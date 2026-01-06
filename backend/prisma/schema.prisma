@@ -90,6 +90,24 @@ model FileCheck {
   @@map("file_checks")
 }
 
+// Service check configuration (Windows services)
+model ServiceCheck {
+  id             String   @id @default(uuid())
+  name           String
+  // Optional direct service identifier (e.g., "SNMPTRAP")
+  serviceName    String?
+  // Optional executable path matcher (e.g., "C:\Windows\System32\snmptrap.exe")
+  executablePath String?
+  // Expected service state (e.g., "Running", "Stopped"). Default: Running.
+  expectedStatus String   @default("Running")
+  description    String?
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@map("service_checks")
+}
+
 // User check configuration
 model UserCheck {
   id           String   @id @default(uuid())
@@ -141,6 +159,7 @@ enum JobType {
   PING
   REGISTRY_CHECK
   FILE_CHECK
+  SERVICE_CHECK
   USER_INFO
   SYSTEM_INFO
   BASELINE_CHECK

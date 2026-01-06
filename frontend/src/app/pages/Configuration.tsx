@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Plus, Pencil, Trash2, Server, FileText, FolderKey, Mail, Clock, User, Monitor, KeyRound, Database, Eye, EyeOff, MapPin } from 'lucide-react';
+import { Plus, Pencil, Trash2, Server, FileText, Wrench, FolderKey, Mail, Clock, User, Monitor, KeyRound, Database, Eye, EyeOff, MapPin } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Card } from '../components/ui/card';
 import { Input } from '../components/ui/input';
@@ -14,11 +14,170 @@ import { api } from '../services/api';
 import { EmailReports } from './EmailReports';
 import { Scheduling } from './Scheduling';
 
+function buildFileCollectorSnippet(params: { filePath?: string }) {
+  const p = (params.filePath ?? '').trim();
+  const pEsc = p.replace(/'/g, "''");
+
+  return `Collector snippet (PowerShell via WinRM; matches backend getFileInfo)
+
+$p = '${pEsc}'
+if (Test-Path -Path $p) {
+  $file = Get-Item -Path $p
+  $isDirectory = $file.PSIsContainer
+  $sizeBytes = $null
+  if (-not $isDirectory -and $file -is [System.IO.FileInfo]) {
+    $sizeBytes = $file.Length
+  }
+  @{
+    path = $p
+    exists = $true
+    name = $file.Name
+    fullPath = $file.FullName
+    isDirectory = $isDirectory
+    sizeBytes = $sizeBytes
+    createdTime = $file.CreationTime.ToString('o')
+    modifiedTime = $file.LastWriteTime.ToString('o')
+    isReadOnly = $file.IsReadOnly
+    attributes = $file.Attributes.ToString()
+  } | ConvertTo-Json
+} else {
+  @{ path = $p; exists = $false } | ConvertTo-Json
+}
+`;
+}
+
+function buildRegistryCollectorSnippet(params: { registryPath?: string; valueName?: string }) {
+  const stored = (params.registryPath ?? '').trim();
+  const vn = (params.valueName ?? '').trim();
+  const storedEsc = stored.replace(/'/g, "''");
+  const vnEsc = vn.replace(/'/g, "''");
+
+  // This is a condensed version of the backend collector logic.
+  // It supports full "HKEY_*\Sub\Key" paths and returns JSON in a consistent shape.
+  return `Collector snippet (PowerShell via WinRM; matches backend getRegistryValue shape)
+
+$stored = '${storedEsc}'
+$n = '${vnEsc}'
+
+function Get-RegistryBaseKey([string]$hive) {
+  switch ($hive.ToUpperInvariant()) {
+    'HKEY_LOCAL_MACHINE' { return [Microsoft.Win32.Registry]::LocalMachine }
+    'HKEY_CURRENT_USER' { return [Microsoft.Win32.Registry]::CurrentUser }
+    'HKEY_CLASSES_ROOT' { return [Microsoft.Win32.Registry]::ClassesRoot }
+    'HKEY_USERS' { return [Microsoft.Win32.Registry]::Users }
+    'HKEY_CURRENT_CONFIG' { return [Microsoft.Win32.Registry]::CurrentConfig }
+    default { return $null }
+  }
+}
+
+try {
+  if ($stored -match '^(HKEY_[A-Z_]+)\\\\(.*)$') {
+    $hive = $Matches[1]
+    $subKey = $Matches[2]
+    $base = Get-RegistryBaseKey $hive
+    if ($null -eq $base) {
+      @{ path = $stored; valueName = $n; exists = $false; error = "Unsupported hive: $hive" } | ConvertTo-Json
+    } else {
+      $key = $base.OpenSubKey($subKey)
+      if ($null -eq $key) {
+        @{ path = $stored; valueName = $n; exists = $false } | ConvertTo-Json
+      } elseif ($n) {
+        $val = $key.GetValue($n, $null)
+        if ($null -eq $val) {
+          @{ path = $stored; valueName = $n; exists = $false } | ConvertTo-Json
+        } else {
+          $kind = $key.GetValueKind($n).ToString()
+          $type = $val.GetType().FullName
+          @{ path = $stored; valueName = $n; exists = $true; value = $val; valueKind = $kind; valueType = $type } | ConvertTo-Json -Depth 10
+        }
+        $key.Close() | Out-Null
+      } else {
+        # Key existence only
+        @{ path = $stored; exists = $true } | ConvertTo-Json
+        $key.Close() | Out-Null
+      }
+    }
+  } else {
+    # Fallback: registry provider path; key existence only
+    @{ path = $stored; exists = (Test-Path -Path $stored) } | ConvertTo-Json
+  }
+} catch {
+  @{ path = $stored; valueName = $n; exists = $false; error = $_.Exception.Message } | ConvertTo-Json
+}
+`;
+}
+
+function buildServiceCollectorSnippet(params: { serviceName?: string; executablePath?: string }) {
+  const sn = (params.serviceName ?? '').trim();
+  const ep = (params.executablePath ?? '').trim();
+  const snEsc = sn.replace(/'/g, "''");
+  const epEsc = ep.replace(/'/g, "''");
+
+  return `Collector snippet (PowerShell via WinRM; matches backend getServiceInfo)
+
+$serviceName = '${snEsc}'
+$exePath = '${epEsc}'
+
+$result = @{}
+$result.query = @{
+  serviceName = $serviceName
+  executablePath = $exePath
+}
+
+try {
+  $svc = $null
+  $matchedBy = $null
+
+  if ($serviceName) {
+    $sn = $serviceName -replace "'", "''"
+    $svc = Get-CimInstance Win32_Service -Filter "Name='$sn'" -ErrorAction SilentlyContinue
+    if ($svc) { $matchedBy = 'serviceName' }
+  }
+
+  if (-not $svc -and $exePath) {
+    $needle = $exePath.ToLowerInvariant()
+    # Enumerate services and match PathName; supports quoting/args in PathName.
+    $all = Get-CimInstance Win32_Service -ErrorAction SilentlyContinue
+    $match = $all | Where-Object {
+      $p = $_.PathName
+      if (-not $p) { return $false }
+      return $p.ToString().ToLowerInvariant().Contains($needle)
+    } | Select-Object -First 1
+
+    if ($match) {
+      $svc = $match
+      $matchedBy = 'executablePath'
+    }
+  }
+
+  if ($svc) {
+    $result.exists = $true
+    $result.matchedBy = $matchedBy
+    $result.name = $svc.Name
+    $result.displayName = $svc.DisplayName
+    $result.state = $svc.State
+    $result.status = $svc.State
+    $result.startMode = $svc.StartMode
+    $result.pathName = $svc.PathName
+    $result.processId = $svc.ProcessId
+  } else {
+    $result.exists = $false
+  }
+} catch {
+  $result.exists = $false
+  $result.error = $_.Exception.Message
+}
+
+$result | ConvertTo-Json -Depth 6
+`;
+}
+
 export function Configuration() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [machines, setMachines] = useState<any[]>([]);
   const [registryChecks, setRegistryChecks] = useState<any[]>([]);
   const [fileChecks, setFileChecks] = useState<any[]>([]);
+  const [serviceChecks, setServiceChecks] = useState<any[]>([]);
   const [userChecks, setUserChecks] = useState<any[]>([]);
   const [systemChecks, setSystemChecks] = useState<any[]>([]);
   const [locations, setLocations] = useState<any[]>([]);
@@ -51,6 +210,7 @@ export function Configuration() {
   const [editRegValueName, setEditRegValueName] = useState('');
   const [editRegExpected, setEditRegExpected] = useState('');
   const [editRegDesc, setEditRegDesc] = useState('');
+  const [editRegSnippetOpen, setEditRegSnippetOpen] = useState(false);
 
   // File check form state
   const [isAddFileOpen, setIsAddFileOpen] = useState(false);
@@ -70,6 +230,24 @@ export function Configuration() {
   const [editFileCheckCreated, setEditFileCheckCreated] = useState(false);
   const [editFileCheckModified, setEditFileCheckModified] = useState(false);
   const [editFileDesc, setEditFileDesc] = useState('');
+  const [editFileSnippetOpen, setEditFileSnippetOpen] = useState(false);
+
+  // Service check form state
+  const [isAddServiceOpen, setIsAddServiceOpen] = useState(false);
+  const [serviceCheckName, setServiceCheckName] = useState('');
+  const [serviceCheckServiceName, setServiceCheckServiceName] = useState('');
+  const [serviceCheckExePath, setServiceCheckExePath] = useState('');
+  const [serviceCheckExpected, setServiceCheckExpected] = useState('Running');
+  const [serviceCheckDesc, setServiceCheckDesc] = useState('');
+  const [isEditServiceOpen, setIsEditServiceOpen] = useState(false);
+  const [editingServiceId, setEditingServiceId] = useState<string | null>(null);
+  const [editServiceCheckName, setEditServiceCheckName] = useState('');
+  const [editServiceCheckServiceName, setEditServiceCheckServiceName] = useState('');
+  const [editServiceCheckExePath, setEditServiceCheckExePath] = useState('');
+  const [editServiceCheckExpected, setEditServiceCheckExpected] = useState('Running');
+  const [editServiceCheckDesc, setEditServiceCheckDesc] = useState('');
+  const [editServiceSnippetOpen, setEditServiceSnippetOpen] = useState(false);
+  const [editServiceIncludeSnippet, setEditServiceIncludeSnippet] = useState(true);
 
   // User check form state
   const [isAddUserOpen, setIsAddUserOpen] = useState(false);
@@ -82,6 +260,7 @@ export function Configuration() {
   const [editUserName, setEditUserName] = useState('');
   const [editUserCheckType, setEditUserCheckType] = useState('CURRENT_AND_LAST');
   const [editUserCustomScript, setEditUserCustomScript] = useState('');
+  const [editUserScriptOpen, setEditUserScriptOpen] = useState(false);
   const [editUserDesc, setEditUserDesc] = useState('');
 
   // System check form state
@@ -95,6 +274,7 @@ export function Configuration() {
   const [editSystemName, setEditSystemName] = useState('');
   const [editSystemCheckType, setEditSystemCheckType] = useState('SYSTEM_INFO');
   const [editSystemCustomScript, setEditSystemCustomScript] = useState('');
+  const [editSystemScriptOpen, setEditSystemScriptOpen] = useState(false);
   const [editSystemDesc, setEditSystemDesc] = useState('');
 
   // Scan authentication form state (WinRM)
@@ -131,10 +311,11 @@ export function Configuration() {
   const loadData = async () => {
     try {
       setLoading(true);
-      const [machinesData, registryData, fileData, userData, systemData, locationsData, smtpData, authData, dbData] = await Promise.all([
+      const [machinesData, registryData, fileData, serviceData, userData, systemData, locationsData, smtpData, authData, dbData] = await Promise.all([
         api.getMachines(),
         api.getRegistryChecks(),
         api.getFileChecks(),
+        api.getServiceChecks().catch(() => []),
         api.getUserChecks(),
         api.getSystemChecks(),
         api.getLocations().catch(() => []),
@@ -145,6 +326,7 @@ export function Configuration() {
       setMachines(machinesData);
       setRegistryChecks(registryData);
       setFileChecks(fileData);
+      setServiceChecks(serviceData);
       setUserChecks(userData);
       setSystemChecks(systemData);
       setLocations(locationsData);
@@ -185,6 +367,35 @@ export function Configuration() {
       ta.remove();
       toast.success('Copied to clipboard');
     }
+  };
+
+  const splitServiceDescription = (desc: unknown): { summary: string; snippet: string } => {
+    const raw = (desc ?? '').toString();
+    const marker = 'Collector snippet';
+    const idx = raw.indexOf(marker);
+    if (idx === -1) return { summary: raw.trim(), snippet: '' };
+    return {
+      summary: raw.slice(0, idx).trim(),
+      snippet: raw.slice(idx).trim(),
+    };
+  };
+
+  const composeServiceDescription = (args: {
+    summary: string;
+    includeSnippet: boolean;
+    serviceName?: string;
+    executablePath?: string;
+  }) => {
+    const summary = (args.summary ?? '').toString().trim();
+    if (!args.includeSnippet) return summary || undefined;
+    const canGenerate = Boolean((args.serviceName ?? '').trim() || (args.executablePath ?? '').trim());
+    if (!canGenerate) return summary || undefined;
+    const snippet = buildServiceCollectorSnippet({
+      serviceName: args.serviceName,
+      executablePath: args.executablePath,
+    }).trim();
+    if (!summary) return snippet;
+    return `${summary}\n\n${snippet}`;
   };
 
   // Machine handlers
@@ -336,6 +547,7 @@ export function Configuration() {
     setEditRegValueName('');
     setEditRegExpected('');
     setEditRegDesc('');
+    setEditRegSnippetOpen(false);
   };
 
   const openEditRegistry = (check: any) => {
@@ -345,6 +557,7 @@ export function Configuration() {
     setEditRegValueName(check.valueName ?? '');
     setEditRegExpected(check.expectedValue ?? '');
     setEditRegDesc(check.description ?? '');
+    setEditRegSnippetOpen(false);
     setIsEditRegistryOpen(true);
   };
 
@@ -416,6 +629,7 @@ export function Configuration() {
     setEditFileCheckCreated(false);
     setEditFileCheckModified(false);
     setEditFileDesc('');
+    setEditFileSnippetOpen(false);
   };
 
   const openEditFile = (check: any) => {
@@ -427,6 +641,7 @@ export function Configuration() {
     setEditFileCheckCreated(Boolean(check.checkCreated));
     setEditFileCheckModified(Boolean(check.checkModified));
     setEditFileDesc(check.description ?? '');
+    setEditFileSnippetOpen(false);
     setIsEditFileOpen(true);
   };
 
@@ -449,6 +664,102 @@ export function Configuration() {
       loadData();
     } catch (error: any) {
       toast.error(error.message || 'Failed to update file check');
+    }
+  };
+
+  // Service check handlers
+  const handleAddServiceCheck = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const sn = serviceCheckServiceName.trim();
+    const ep = serviceCheckExePath.trim();
+    if (!sn && !ep) {
+      toast.error('Provide at least a Service Name or an Executable Path');
+      return;
+    }
+    try {
+      await api.createServiceCheck({
+        name: serviceCheckName,
+        serviceName: sn || undefined,
+        executablePath: ep || undefined,
+        expectedStatus: (serviceCheckExpected || 'Running').trim(),
+        description: serviceCheckDesc || undefined,
+      });
+      toast.success('Service check added');
+      setIsAddServiceOpen(false);
+      setServiceCheckName('');
+      setServiceCheckServiceName('');
+      setServiceCheckExePath('');
+      setServiceCheckExpected('Running');
+      setServiceCheckDesc('');
+      loadData();
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to add service check');
+    }
+  };
+
+  const handleDeleteServiceCheck = async (id: string, name: string) => {
+    if (!confirm(`Delete service check "${name}"?`)) return;
+    try {
+      await api.deleteServiceCheck(id);
+      toast.success('Service check deleted');
+      loadData();
+    } catch (error) {
+      toast.error('Failed to delete service check');
+    }
+  };
+
+  const resetEditService = () => {
+    setEditingServiceId(null);
+    setEditServiceCheckName('');
+    setEditServiceCheckServiceName('');
+    setEditServiceCheckExePath('');
+    setEditServiceCheckExpected('Running');
+    setEditServiceCheckDesc('');
+    setEditServiceSnippetOpen(false);
+    setEditServiceIncludeSnippet(true);
+  };
+
+  const openEditService = (check: any) => {
+    setEditingServiceId(check.id);
+    setEditServiceCheckName(check.name ?? '');
+    setEditServiceCheckServiceName(check.serviceName ?? '');
+    setEditServiceCheckExePath(check.executablePath ?? '');
+    setEditServiceCheckExpected(check.expectedStatus ?? 'Running');
+    const { summary, snippet } = splitServiceDescription(check.description);
+    setEditServiceCheckDesc(summary);
+    setEditServiceIncludeSnippet(Boolean(snippet));
+    setEditServiceSnippetOpen(false);
+    setIsEditServiceOpen(true);
+  };
+
+  const handleUpdateServiceCheck = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingServiceId) return;
+    const sn = editServiceCheckServiceName.trim();
+    const ep = editServiceCheckExePath.trim();
+    if (!sn && !ep) {
+      toast.error('Provide at least a Service Name or an Executable Path');
+      return;
+    }
+    try {
+      await api.updateServiceCheck(editingServiceId, {
+        name: editServiceCheckName,
+        serviceName: sn || null,
+        executablePath: ep || null,
+        expectedStatus: (editServiceCheckExpected || 'Running').trim(),
+        description: composeServiceDescription({
+          summary: editServiceCheckDesc,
+          includeSnippet: editServiceIncludeSnippet,
+          serviceName: sn,
+          executablePath: ep,
+        }),
+      });
+      toast.success('Service check updated');
+      setIsEditServiceOpen(false);
+      resetEditService();
+      loadData();
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to update service check');
     }
   };
 
@@ -490,6 +801,7 @@ export function Configuration() {
     setEditUserName('');
     setEditUserCheckType('CURRENT_AND_LAST');
     setEditUserCustomScript('');
+    setEditUserScriptOpen(false);
     setEditUserDesc('');
   };
 
@@ -498,6 +810,8 @@ export function Configuration() {
     setEditUserName(check.name ?? '');
     setEditUserCheckType(check.checkType ?? 'CURRENT_AND_LAST');
     setEditUserCustomScript(check.customScript ?? '');
+    // Always default collapsed when entering Edit
+    setEditUserScriptOpen(false);
     setEditUserDesc(check.description ?? '');
     setIsEditUserOpen(true);
   };
@@ -569,6 +883,7 @@ export function Configuration() {
     setEditSystemName('');
     setEditSystemCheckType('SYSTEM_INFO');
     setEditSystemCustomScript('');
+    setEditSystemScriptOpen(false);
     setEditSystemDesc('');
   };
 
@@ -577,6 +892,8 @@ export function Configuration() {
     setEditSystemName(check.name ?? '');
     setEditSystemCheckType(check.checkType ?? 'SYSTEM_INFO');
     setEditSystemCustomScript(check.customScript ?? '');
+    // Always default collapsed when entering Edit
+    setEditSystemScriptOpen(false);
     setEditSystemDesc(check.description ?? '');
     setIsEditSystemOpen(true);
   };
@@ -769,6 +1086,13 @@ export function Configuration() {
           >
             <FileText className="w-4 h-4 mr-2" />
             File Checks
+          </TabsTrigger>
+          <TabsTrigger
+            value="services"
+            className="w-full flex-none h-auto justify-start py-2 data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-300 hover:bg-slate-800"
+          >
+            <Wrench className="w-4 h-4 mr-2" />
+            Service Checks
           </TabsTrigger>
           <TabsTrigger
             value="users"
@@ -1107,15 +1431,16 @@ export function Configuration() {
               open={isEditRegistryOpen}
               onOpenChange={(open) => {
                 setIsEditRegistryOpen(open);
+                if (open) setEditRegSnippetOpen(false);
                 if (!open) resetEditRegistry();
               }}
             >
-              <DialogContent className="bg-slate-900 border-slate-800 max-w-2xl">
+              <DialogContent className="bg-slate-900 border-slate-800 max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
                 <DialogHeader>
                   <DialogTitle className="text-slate-200">Edit Registry Check</DialogTitle>
                 </DialogHeader>
-                <form onSubmit={handleUpdateRegistryCheck}>
-                  <div className="space-y-4 py-4">
+                <form onSubmit={handleUpdateRegistryCheck} className="flex flex-col flex-1 overflow-hidden">
+                  <div className="space-y-4 py-4 overflow-y-auto pr-2 flex-1">
                     <div>
                       <Label className="text-slate-300">Check Name *</Label>
                       <Input
@@ -1161,7 +1486,58 @@ export function Configuration() {
                         className="bg-slate-950 border-slate-800"
                         value={editRegDesc}
                         onChange={(e) => setEditRegDesc(e.target.value)}
+                        rows={3}
                       />
+                      <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-slate-400">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setEditRegSnippetOpen((v) => !v)}
+                          aria-expanded={editRegSnippetOpen}
+                          className="text-slate-400 hover:bg-slate-800 px-2"
+                        >
+                          {editRegSnippetOpen ? (
+                            <>
+                              <EyeOff className="w-4 h-4 mr-2" />
+                              Hide collector snippet
+                            </>
+                          ) : (
+                            <>
+                              <Eye className="w-4 h-4 mr-2" />
+                              Show collector snippet
+                            </>
+                          )}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() =>
+                            copyText(
+                              buildRegistryCollectorSnippet({
+                                registryPath: editRegPath,
+                                valueName: editRegValueName,
+                              })
+                            )
+                          }
+                          className="text-slate-400 hover:bg-slate-800 px-2"
+                        >
+                          Copy snippet
+                        </Button>
+                      </div>
+                      {editRegSnippetOpen && (
+                        <div
+                          role="region"
+                          aria-label="Collector snippet"
+                          className="mt-2 p-3 rounded-md border border-slate-800 bg-slate-950 text-xs text-slate-300 font-mono whitespace-pre-wrap max-h-64 overflow-auto"
+                        >
+                          {buildRegistryCollectorSnippet({
+                            registryPath: editRegPath,
+                            valueName: editRegValueName,
+                          })}
+                        </div>
+                      )}
                     </div>
                   </div>
                   <DialogFooter>
@@ -1238,12 +1614,12 @@ export function Configuration() {
                   <Plus className="w-4 h-4 mr-2" />
                   Add File Check
                 </Button>
-                <DialogContent className="bg-slate-900 border-slate-800 max-w-2xl">
+                <DialogContent className="bg-slate-900 border-slate-800 max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
                   <DialogHeader>
                     <DialogTitle className="text-slate-200">Add File Check</DialogTitle>
                   </DialogHeader>
-                  <form onSubmit={handleAddFileCheck}>
-                    <div className="space-y-4 py-4">
+                  <form onSubmit={handleAddFileCheck} className="flex flex-col flex-1 overflow-hidden">
+                    <div className="space-y-4 py-4 overflow-y-auto pr-2 flex-1">
                       <div>
                         <Label className="text-slate-300">Check Name *</Label>
                         <Input 
@@ -1304,6 +1680,7 @@ export function Configuration() {
                           className="bg-slate-950 border-slate-800"
                           value={fileDesc}
                           onChange={(e) => setFileDesc(e.target.value)}
+                          rows={3}
                         />
                       </div>
                     </div>
@@ -1324,15 +1701,16 @@ export function Configuration() {
               open={isEditFileOpen}
               onOpenChange={(open) => {
                 setIsEditFileOpen(open);
+                if (open) setEditFileSnippetOpen(false);
                 if (!open) resetEditFile();
               }}
             >
-              <DialogContent className="bg-slate-900 border-slate-800 max-w-2xl">
+              <DialogContent className="bg-slate-900 border-slate-800 max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
                 <DialogHeader>
                   <DialogTitle className="text-slate-200">Edit File Check</DialogTitle>
                 </DialogHeader>
-                <form onSubmit={handleUpdateFileCheck}>
-                  <div className="space-y-4 py-4">
+                <form onSubmit={handleUpdateFileCheck} className="flex flex-col flex-1 overflow-hidden">
+                  <div className="space-y-4 py-4 overflow-y-auto pr-2 flex-1">
                     <div>
                       <Label className="text-slate-300">Check Name *</Label>
                       <Input
@@ -1381,7 +1759,48 @@ export function Configuration() {
                         className="bg-slate-950 border-slate-800"
                         value={editFileDesc}
                         onChange={(e) => setEditFileDesc(e.target.value)}
+                        rows={3}
                       />
+                      <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-slate-400">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setEditFileSnippetOpen((v) => !v)}
+                          aria-expanded={editFileSnippetOpen}
+                          className="text-slate-400 hover:bg-slate-800 px-2"
+                        >
+                          {editFileSnippetOpen ? (
+                            <>
+                              <EyeOff className="w-4 h-4 mr-2" />
+                              Hide collector snippet
+                            </>
+                          ) : (
+                            <>
+                              <Eye className="w-4 h-4 mr-2" />
+                              Show collector snippet
+                            </>
+                          )}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => copyText(buildFileCollectorSnippet({ filePath: editFilePath }))}
+                          className="text-slate-400 hover:bg-slate-800 px-2"
+                        >
+                          Copy snippet
+                        </Button>
+                      </div>
+                      {editFileSnippetOpen && (
+                        <div
+                          role="region"
+                          aria-label="Collector snippet"
+                          className="mt-2 p-3 rounded-md border border-slate-800 bg-slate-950 text-xs text-slate-300 font-mono whitespace-pre-wrap max-h-64 overflow-auto"
+                        >
+                          {buildFileCollectorSnippet({ filePath: editFilePath })}
+                        </div>
+                      )}
                     </div>
                   </div>
                   <DialogFooter>
@@ -1451,6 +1870,292 @@ export function Configuration() {
           </Card>
           </TabsContent>
 
+        {/* Service Checks Tab */}
+          <TabsContent value="services">
+          <Card className="bg-slate-900 border-slate-800 p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-semibold text-slate-200">Service Checks</h3>
+              <Dialog open={isAddServiceOpen} onOpenChange={setIsAddServiceOpen}>
+                <Button onClick={() => setIsAddServiceOpen(true)} className="bg-cyan-600 hover:bg-cyan-700">
+                  <Plus className="w-4 h-4 mr-2" />
+                  Add Service Check
+                </Button>
+                <DialogContent className="bg-slate-900 border-slate-800 max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
+                  <DialogHeader>
+                    <DialogTitle className="text-slate-200">Add Service Check</DialogTitle>
+                  </DialogHeader>
+                  <form onSubmit={handleAddServiceCheck} className="flex flex-col flex-1 overflow-hidden">
+                    <div className="space-y-4 py-4 overflow-y-auto pr-2 flex-1">
+                      <div>
+                        <Label className="text-slate-300">Check Name *</Label>
+                        <Input
+                          placeholder="e.g., SNMP Trap Service"
+                          className="bg-slate-950 border-slate-800"
+                          value={serviceCheckName}
+                          onChange={(e) => setServiceCheckName(e.target.value)}
+                          required
+                        />
+                      </div>
+                      <div>
+                        <Label className="text-slate-300">Service Name (optional)</Label>
+                        <Input
+                          placeholder="e.g., SNMPTRAP"
+                          className="bg-slate-950 border-slate-800 font-mono"
+                          value={serviceCheckServiceName}
+                          onChange={(e) => setServiceCheckServiceName(e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <Label className="text-slate-300">Executable Path (optional)</Label>
+                        <Input
+                          placeholder="e.g., C:\WINDOWS\System32\snmptrap.exe"
+                          className="bg-slate-950 border-slate-800 font-mono"
+                          value={serviceCheckExePath}
+                          onChange={(e) => setServiceCheckExePath(e.target.value)}
+                        />
+                        <div className="text-xs text-slate-500 mt-1">
+                          Provide at least one of Service Name or Executable Path.
+                        </div>
+                      </div>
+                      <div>
+                        <Label className="text-slate-300">Expected Status</Label>
+                        <select
+                          value={serviceCheckExpected}
+                          onChange={(e) => setServiceCheckExpected(e.target.value)}
+                          className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-md text-slate-200"
+                        >
+                          <option value="Running">Running</option>
+                          <option value="Stopped">Stopped</option>
+                          <option value="Paused">Paused</option>
+                          <option value="Tracking">Tracking</option>
+                        </select>
+                        <div className="text-xs text-slate-500 mt-1">
+                          Tracking records the service state but does not generate alerts for state changes.
+                        </div>
+                      </div>
+                      <div>
+                        <Label className="text-slate-300">Description</Label>
+                        <Textarea
+                          placeholder="Optional description"
+                          className="bg-slate-950 border-slate-800"
+                          value={serviceCheckDesc}
+                          onChange={(e) => setServiceCheckDesc(e.target.value)}
+                          rows={3}
+                        />
+                      </div>
+                    </div>
+                    <DialogFooter>
+                      <Button type="button" variant="outline" onClick={() => setIsAddServiceOpen(false)} className="border-slate-700">
+                        Cancel
+                      </Button>
+                      <Button type="submit" className="bg-cyan-600 hover:bg-cyan-700">
+                        Add Check
+                      </Button>
+                    </DialogFooter>
+                  </form>
+                </DialogContent>
+              </Dialog>
+            </div>
+
+            <Dialog
+              open={isEditServiceOpen}
+              onOpenChange={(open) => {
+                setIsEditServiceOpen(open);
+                if (open) setEditServiceSnippetOpen(false);
+                if (!open) resetEditService();
+              }}
+            >
+              <DialogContent className="bg-slate-900 border-slate-800 max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
+                <DialogHeader>
+                  <DialogTitle className="text-slate-200">Edit Service Check</DialogTitle>
+                </DialogHeader>
+                <form onSubmit={handleUpdateServiceCheck} className="flex flex-col flex-1 overflow-hidden">
+                  <div className="space-y-4 py-4 overflow-y-auto pr-2 flex-1">
+                    <div>
+                      <Label className="text-slate-300">Check Name *</Label>
+                      <Input
+                        className="bg-slate-950 border-slate-800"
+                        value={editServiceCheckName}
+                        onChange={(e) => setEditServiceCheckName(e.target.value)}
+                        required
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-slate-300">Service Name (optional)</Label>
+                      <Input
+                        className="bg-slate-950 border-slate-800 font-mono"
+                        value={editServiceCheckServiceName}
+                        onChange={(e) => setEditServiceCheckServiceName(e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-slate-300">Executable Path (optional)</Label>
+                      <Input
+                        className="bg-slate-950 border-slate-800 font-mono"
+                        value={editServiceCheckExePath}
+                        onChange={(e) => setEditServiceCheckExePath(e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-slate-300">Expected Status</Label>
+                      <select
+                        value={editServiceCheckExpected}
+                        onChange={(e) => setEditServiceCheckExpected(e.target.value)}
+                        className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-md text-slate-200"
+                      >
+                        <option value="Running">Running</option>
+                        <option value="Stopped">Stopped</option>
+                        <option value="Paused">Paused</option>
+                        <option value="Tracking">Tracking</option>
+                      </select>
+                      <div className="text-xs text-slate-500 mt-1">
+                        Tracking records the service state but does not generate alerts for state changes.
+                      </div>
+                    </div>
+                    <div>
+                      <Label className="text-slate-300">Description</Label>
+                      <Textarea
+                        className="bg-slate-950 border-slate-800"
+                        value={editServiceCheckDesc}
+                        onChange={(e) => setEditServiceCheckDesc(e.target.value)}
+                        rows={3}
+                      />
+                      <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-slate-400">
+                        <label className="flex items-center gap-2">
+                          <Checkbox
+                            checked={editServiceIncludeSnippet}
+                            onCheckedChange={(v) => setEditServiceIncludeSnippet(Boolean(v))}
+                          />
+                          Save collector snippet in description
+                        </label>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setEditServiceSnippetOpen((v) => !v)}
+                          disabled={!(editServiceCheckServiceName.trim() || editServiceCheckExePath.trim())}
+                          aria-expanded={editServiceSnippetOpen}
+                          className="text-slate-400 hover:bg-slate-800 px-2 disabled:opacity-40"
+                        >
+                          {editServiceSnippetOpen ? (
+                            <>
+                              <EyeOff className="w-4 h-4 mr-2" />
+                              Hide collector snippet
+                            </>
+                          ) : (
+                            <>
+                              <Eye className="w-4 h-4 mr-2" />
+                              Show collector snippet
+                            </>
+                          )}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() =>
+                            copyText(
+                              buildServiceCollectorSnippet({
+                                serviceName: editServiceCheckServiceName,
+                                executablePath: editServiceCheckExePath,
+                              })
+                            )
+                          }
+                          disabled={!(editServiceCheckServiceName.trim() || editServiceCheckExePath.trim())}
+                          className="text-slate-400 hover:bg-slate-800 px-2 disabled:opacity-40"
+                        >
+                          Copy snippet
+                        </Button>
+                      </div>
+                      {editServiceSnippetOpen && (
+                        <div
+                          role="region"
+                          aria-label="Collector snippet"
+                          className="mt-2 p-3 rounded-md border border-slate-800 bg-slate-950 text-xs text-slate-300 font-mono whitespace-pre-wrap max-h-64 overflow-auto"
+                        >
+                          {buildServiceCollectorSnippet({
+                            serviceName: editServiceCheckServiceName,
+                            executablePath: editServiceCheckExePath,
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <DialogFooter>
+                    <Button type="button" variant="outline" onClick={() => setIsEditServiceOpen(false)} className="border-slate-700">
+                      Cancel
+                    </Button>
+                    <Button type="submit" className="bg-cyan-600 hover:bg-cyan-700" disabled={!editingServiceId}>
+                      Save Changes
+                    </Button>
+                  </DialogFooter>
+                </form>
+              </DialogContent>
+            </Dialog>
+
+            <div className="space-y-2">
+              {loading ? (
+                <div className="text-center py-8 text-slate-400">Loading...</div>
+              ) : serviceChecks.length === 0 ? (
+                <div className="text-center py-8 text-slate-400">No service checks configured</div>
+              ) : (
+                serviceChecks.map((check) => (
+                  <div key={check.id} className="p-4 bg-slate-950 rounded-lg border border-slate-800">
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1">
+                        <div className="font-medium text-slate-200">{check.name}</div>
+                        {check.serviceName && (
+                          <div className="text-sm text-slate-400 font-mono mt-1">Service: {check.serviceName}</div>
+                        )}
+                        {check.executablePath && (
+                          <div className="text-sm text-slate-400 font-mono mt-1">Path: {check.executablePath}</div>
+                        )}
+                        <div className="flex gap-2 mt-2">
+                          <span className="text-xs px-2 py-0.5 bg-slate-800 text-slate-400 rounded">
+                            Expected: {check.expectedStatus || 'Running'}
+                          </span>
+                          {!check.isActive && (
+                            <span className="text-xs px-2 py-0.5 bg-slate-800 text-slate-400 rounded">Inactive</span>
+                          )}
+                        </div>
+                        {check.description && (() => {
+                          const { summary } = splitServiceDescription(check.description);
+                          if (!summary) return null;
+                          return (
+                            <div className="text-xs text-slate-500 whitespace-pre-wrap mt-2">
+                              {summary}
+                            </div>
+                          );
+                        })()}
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => openEditService(check)}
+                          className="hover:bg-slate-800 text-slate-300"
+                          title="Edit"
+                        >
+                          <Pencil className="w-4 h-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleDeleteServiceCheck(check.id, check.name)}
+                          className="hover:bg-red-500/10 text-red-400"
+                          title="Delete"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </Card>
+          </TabsContent>
+
         {/* User Checks Tab */}
           <TabsContent value="users">
           <Card className="bg-slate-900 border-slate-800 p-6">
@@ -1461,12 +2166,12 @@ export function Configuration() {
                   <Plus className="w-4 h-4 mr-2" />
                   Add User Check
                 </Button>
-                <DialogContent className="bg-slate-900 border-slate-800 max-w-2xl">
+                <DialogContent className="bg-slate-900 border-slate-800 max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
                   <DialogHeader>
                     <DialogTitle className="text-slate-200">Add User Check</DialogTitle>
                   </DialogHeader>
-                  <form onSubmit={handleAddUserCheck}>
-                    <div className="space-y-4 py-4">
+                  <form onSubmit={handleAddUserCheck} className="flex flex-col flex-1 overflow-hidden">
+                    <div className="space-y-4 py-4 overflow-y-auto pr-2 flex-1">
                       <div>
                         <Label className="text-slate-300">Check Name *</Label>
                         <Input
@@ -1497,7 +2202,7 @@ export function Configuration() {
                             value={userCustomScript}
                             onChange={(e) => setUserCustomScript(e.target.value)}
                             className="bg-slate-950 border-slate-800 text-slate-200 font-mono text-sm"
-                            rows={6}
+                            rows={8}
                             placeholder="Enter PowerShell script..."
                           />
                         </div>
@@ -1513,6 +2218,9 @@ export function Configuration() {
                       </div>
                     </div>
                     <DialogFooter>
+                      <Button type="button" variant="outline" onClick={() => setIsAddUserOpen(false)} className="border-slate-700">
+                        Cancel
+                      </Button>
                       <Button type="submit" className="bg-cyan-600 hover:bg-cyan-700">Add Check</Button>
                     </DialogFooter>
                   </form>
@@ -1574,13 +2282,13 @@ export function Configuration() {
           </Card>
 
           {/* Edit User Check Dialog */}
-          <Dialog open={isEditUserOpen} onOpenChange={(open) => { setIsEditUserOpen(open); if (!open) resetEditUser(); }}>
-            <DialogContent className="bg-slate-900 border-slate-800 max-w-2xl">
+          <Dialog open={isEditUserOpen} onOpenChange={(open) => { setIsEditUserOpen(open); if (open) setEditUserScriptOpen(false); if (!open) resetEditUser(); }}>
+            <DialogContent className="bg-slate-900 border-slate-800 max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
               <DialogHeader>
                 <DialogTitle className="text-slate-200">Edit User Check</DialogTitle>
               </DialogHeader>
-              <form onSubmit={handleUpdateUserCheck}>
-                <div className="space-y-4 py-4">
+              <form onSubmit={handleUpdateUserCheck} className="flex flex-col flex-1 overflow-hidden">
+                <div className="space-y-4 py-4 overflow-y-auto pr-2 flex-1">
                   <div>
                     <Label className="text-slate-300">Check Name *</Label>
                     <Input
@@ -1594,7 +2302,12 @@ export function Configuration() {
                     <Label className="text-slate-300">Check Type</Label>
                     <select
                       value={editUserCheckType}
-                      onChange={(e) => setEditUserCheckType(e.target.value)}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setEditUserCheckType(v);
+                        if (v !== 'CUSTOM') setEditUserScriptOpen(false);
+                        else setEditUserScriptOpen(true);
+                      }}
                       className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-md text-slate-200"
                     >
                       <option value="CURRENT_AND_LAST">Current and Last User</option>
@@ -1605,13 +2318,49 @@ export function Configuration() {
                   </div>
                   {editUserCheckType === 'CUSTOM' && (
                     <div>
-                      <Label className="text-slate-300">Custom PowerShell Script</Label>
-                      <Textarea
-                        value={editUserCustomScript}
-                        onChange={(e) => setEditUserCustomScript(e.target.value)}
-                        className="bg-slate-950 border-slate-800 text-slate-200 font-mono text-sm"
-                        rows={6}
-                      />
+                      <div className="flex items-center justify-between">
+                        <Label className="text-slate-300">Custom PowerShell Script</Label>
+                        <div className="flex items-center gap-2">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setEditUserScriptOpen((v) => !v)}
+                            aria-expanded={editUserScriptOpen}
+                            className="text-slate-400 hover:bg-slate-800 px-2"
+                          >
+                            {editUserScriptOpen ? (
+                              <>
+                                <EyeOff className="w-4 h-4 mr-2" />
+                                Hide script
+                              </>
+                            ) : (
+                              <>
+                                <Eye className="w-4 h-4 mr-2" />
+                                Show script
+                              </>
+                            )}
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => copyText(editUserCustomScript)}
+                            disabled={!editUserCustomScript.trim()}
+                            className="text-slate-400 hover:bg-slate-800 px-2 disabled:opacity-40"
+                          >
+                            Copy script
+                          </Button>
+                        </div>
+                      </div>
+                      {editUserScriptOpen && (
+                        <Textarea
+                          value={editUserCustomScript}
+                          onChange={(e) => setEditUserCustomScript(e.target.value)}
+                          className="bg-slate-950 border-slate-800 text-slate-200 font-mono text-sm mt-2"
+                          rows={10}
+                        />
+                      )}
                     </div>
                   )}
                   <div>
@@ -1625,6 +2374,9 @@ export function Configuration() {
                   </div>
                 </div>
                 <DialogFooter>
+                  <Button type="button" variant="outline" onClick={() => setIsEditUserOpen(false)} className="border-slate-700">
+                    Cancel
+                  </Button>
                   <Button type="submit" className="bg-cyan-600 hover:bg-cyan-700">Update Check</Button>
                 </DialogFooter>
               </form>
@@ -1642,12 +2394,12 @@ export function Configuration() {
                   <Plus className="w-4 h-4 mr-2" />
                   Add System Check
                 </Button>
-                <DialogContent className="bg-slate-900 border-slate-800 max-w-2xl">
+                <DialogContent className="bg-slate-900 border-slate-800 max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
                   <DialogHeader>
                     <DialogTitle className="text-slate-200">Add System Check</DialogTitle>
                   </DialogHeader>
-                  <form onSubmit={handleAddSystemCheck}>
-                    <div className="space-y-4 py-4">
+                  <form onSubmit={handleAddSystemCheck} className="flex flex-col flex-1 overflow-hidden">
+                    <div className="space-y-4 py-4 overflow-y-auto pr-2 flex-1">
                       <div>
                         <Label className="text-slate-300">Check Name *</Label>
                         <Input
@@ -1676,7 +2428,7 @@ export function Configuration() {
                             value={systemCustomScript}
                             onChange={(e) => setSystemCustomScript(e.target.value)}
                             className="bg-slate-950 border-slate-800 text-slate-200 font-mono text-sm"
-                            rows={6}
+                            rows={8}
                             placeholder="Enter PowerShell script..."
                           />
                         </div>
@@ -1692,6 +2444,9 @@ export function Configuration() {
                       </div>
                     </div>
                     <DialogFooter>
+                      <Button type="button" variant="outline" onClick={() => setIsAddSystemOpen(false)} className="border-slate-700">
+                        Cancel
+                      </Button>
                       <Button type="submit" className="bg-cyan-600 hover:bg-cyan-700">Add Check</Button>
                     </DialogFooter>
                   </form>
@@ -1753,13 +2508,13 @@ export function Configuration() {
           </Card>
 
           {/* Edit System Check Dialog */}
-          <Dialog open={isEditSystemOpen} onOpenChange={(open) => { setIsEditSystemOpen(open); if (!open) resetEditSystem(); }}>
-            <DialogContent className="bg-slate-900 border-slate-800 max-w-2xl">
+          <Dialog open={isEditSystemOpen} onOpenChange={(open) => { setIsEditSystemOpen(open); if (open) setEditSystemScriptOpen(false); if (!open) resetEditSystem(); }}>
+            <DialogContent className="bg-slate-900 border-slate-800 max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
               <DialogHeader>
                 <DialogTitle className="text-slate-200">Edit System Check</DialogTitle>
               </DialogHeader>
-              <form onSubmit={handleUpdateSystemCheck}>
-                <div className="space-y-4 py-4">
+              <form onSubmit={handleUpdateSystemCheck} className="flex flex-col flex-1 overflow-hidden">
+                <div className="space-y-4 py-4 overflow-y-auto pr-2 flex-1">
                   <div>
                     <Label className="text-slate-300">Check Name *</Label>
                     <Input
@@ -1773,7 +2528,12 @@ export function Configuration() {
                     <Label className="text-slate-300">Check Type</Label>
                     <select
                       value={editSystemCheckType}
-                      onChange={(e) => setEditSystemCheckType(e.target.value)}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setEditSystemCheckType(v);
+                        if (v !== 'CUSTOM') setEditSystemScriptOpen(false);
+                        else setEditSystemScriptOpen(true);
+                      }}
                       className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-md text-slate-200"
                     >
                       <option value="SYSTEM_INFO">System Information</option>
@@ -1782,13 +2542,49 @@ export function Configuration() {
                   </div>
                   {editSystemCheckType === 'CUSTOM' && (
                     <div>
-                      <Label className="text-slate-300">Custom PowerShell Script</Label>
-                      <Textarea
-                        value={editSystemCustomScript}
-                        onChange={(e) => setEditSystemCustomScript(e.target.value)}
-                        className="bg-slate-950 border-slate-800 text-slate-200 font-mono text-sm"
-                        rows={6}
-                      />
+                      <div className="flex items-center justify-between">
+                        <Label className="text-slate-300">Custom PowerShell Script</Label>
+                        <div className="flex items-center gap-2">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setEditSystemScriptOpen((v) => !v)}
+                            aria-expanded={editSystemScriptOpen}
+                            className="text-slate-400 hover:bg-slate-800 px-2"
+                          >
+                            {editSystemScriptOpen ? (
+                              <>
+                                <EyeOff className="w-4 h-4 mr-2" />
+                                Hide script
+                              </>
+                            ) : (
+                              <>
+                                <Eye className="w-4 h-4 mr-2" />
+                                Show script
+                              </>
+                            )}
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => copyText(editSystemCustomScript)}
+                            disabled={!editSystemCustomScript.trim()}
+                            className="text-slate-400 hover:bg-slate-800 px-2 disabled:opacity-40"
+                          >
+                            Copy script
+                          </Button>
+                        </div>
+                      </div>
+                      {editSystemScriptOpen && (
+                        <Textarea
+                          value={editSystemCustomScript}
+                          onChange={(e) => setEditSystemCustomScript(e.target.value)}
+                          className="bg-slate-950 border-slate-800 text-slate-200 font-mono text-sm mt-2"
+                          rows={10}
+                        />
+                      )}
                     </div>
                   )}
                   <div>
@@ -1802,6 +2598,9 @@ export function Configuration() {
                   </div>
                 </div>
                 <DialogFooter>
+                  <Button type="button" variant="outline" onClick={() => setIsEditSystemOpen(false)} className="border-slate-700">
+                    Cancel
+                  </Button>
                   <Button type="submit" className="bg-cyan-600 hover:bg-cyan-700">Update Check</Button>
                 </DialogFooter>
               </form>

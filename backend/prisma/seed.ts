@@ -241,6 +241,127 @@ foreach ($adapter in $adapters) {
     console.log(`Skipping system checks seed (${existingSystemChecks} already exist)`);
   }
 
+  // Seed Service Checks (Windows services)
+  // This creates an initial example/service check so it immediately shows up in Configuration.
+  {
+    try {
+      const svc = (prisma as any).serviceCheck;
+      if (!svc?.findFirst || !svc?.create) throw new Error('serviceCheck model not available');
+
+      console.log('Ensuring default service checks exist...');
+
+      const snmpCollectorSnippet = `Collector snippet (PowerShell via WinRM; matches backend getServiceInfo)
+
+$serviceName = 'SNMPTRAP'
+$exePath = 'C:\\WINDOWS\\System32\\snmptrap.exe'
+
+$result = @{}
+$result.query = @{
+  serviceName = $serviceName
+  executablePath = $exePath
+}
+
+try {
+  $svc = $null
+  $matchedBy = $null
+
+  if ($serviceName) {
+    $sn = $serviceName -replace "'", "''"
+    $svc = Get-CimInstance Win32_Service -Filter "Name='$sn'" -ErrorAction SilentlyContinue
+    if ($svc) { $matchedBy = 'serviceName' }
+  }
+
+  if (-not $svc -and $exePath) {
+    $needle = $exePath.ToLowerInvariant()
+    # Enumerate services and match PathName; supports quoting/args in PathName.
+    $all = Get-CimInstance Win32_Service -ErrorAction SilentlyContinue
+    $match = $all | Where-Object {
+      $p = $_.PathName
+      if (-not $p) { return $false }
+      return $p.ToString().ToLowerInvariant().Contains($needle)
+    } | Select-Object -First 1
+
+    if ($match) {
+      $svc = $match
+      $matchedBy = 'executablePath'
+    }
+  }
+
+  if ($svc) {
+    $result.exists = $true
+    $result.matchedBy = $matchedBy
+    $result.name = $svc.Name
+    $result.displayName = $svc.DisplayName
+    $result.state = $svc.State
+    $result.status = $svc.State
+    $result.startMode = $svc.StartMode
+    $result.pathName = $svc.PathName
+    $result.processId = $svc.ProcessId
+  } else {
+    $result.exists = $false
+  }
+} catch {
+  $result.exists = $false
+  $result.error = $_.Exception.Message
+}
+
+$result | ConvertTo-Json -Depth 6
+`;
+
+      const defaultDesc = `Checks Windows service state for the SNMP Trap service (snmptrap.exe).
+
+${snmpCollectorSnippet}`;
+
+      const existing = await svc.findFirst({
+        where: {
+          OR: [
+            { serviceName: 'SNMPTRAP' },
+            { executablePath: 'C:\\\\WINDOWS\\\\System32\\\\snmptrap.exe' },
+            { name: 'SNMP Trap Service' },
+          ],
+        },
+      });
+
+      if (!existing) {
+        await svc.create({
+          data: {
+            name: 'SNMP Trap Service',
+            serviceName: 'SNMPTRAP',
+            executablePath: 'C:\\WINDOWS\\System32\\snmptrap.exe',
+            expectedStatus: 'Running',
+            description: defaultDesc,
+            isActive: true,
+          },
+        });
+        console.log('✓ Ensured service check: SNMP Trap Service (created)');
+      } else {
+        const updates: any = {};
+        if (!(existing.name ?? '').toString().trim()) updates.name = 'SNMP Trap Service';
+        if (!(existing.serviceName ?? '').toString().trim()) updates.serviceName = 'SNMPTRAP';
+        if (!(existing.executablePath ?? '').toString().trim())
+          updates.executablePath = 'C:\\WINDOWS\\System32\\snmptrap.exe';
+        if (!(existing.expectedStatus ?? '').toString().trim()) updates.expectedStatus = 'Running';
+
+        const currentDesc = (existing.description ?? '').toString();
+        if (!currentDesc.includes('Collector snippet') || !currentDesc.includes('Get-CimInstance Win32_Service')) {
+          updates.description = currentDesc.trim()
+            ? `${currentDesc.trim()}\n\n${snmpCollectorSnippet}`
+            : defaultDesc;
+        }
+
+        if (Object.keys(updates).length > 0) {
+          await svc.update({ where: { id: existing.id }, data: updates });
+          console.log('✓ Ensured service check: SNMP Trap Service (updated)');
+        } else {
+          console.log('✓ Ensured service check: SNMP Trap Service (already present)');
+        }
+      }
+    } catch (e) {
+      // Non-fatal for older schemas; keep startup resilient.
+      console.log('Skipping service checks seed (schema not present yet)');
+    }
+  }
+
   // Ensure seeded User/System checks are stored as CUSTOM so the UI can show the actual script used.
   // This intentionally converts non-custom rows into custom-script rows using equivalent PowerShell.
   {

@@ -60,6 +60,7 @@ export function Dashboard() {
   const [latestByMachineAndObject, setLatestByMachineAndObject] = useState<Record<string, LatestResult | undefined>>({});
   const [searchRegistry, setSearchRegistry] = useState('');
   const [searchFile, setSearchFile] = useState('');
+  const [searchService, setSearchService] = useState('');
   const [searchUser, setSearchUser] = useState('');
   const [searchSystem, setSearchSystem] = useState('');
 
@@ -171,6 +172,18 @@ export function Dashboard() {
           return parts.join(' · ');
         }
         if (exists === false) return 'missing';
+      }
+
+      if (r.checkType === 'SERVICE_CHECK') {
+        const svcState = (data as any).state ?? (data as any).status ?? (data as any).State;
+        const matchedBy = (data as any).matchedBy ?? (data as any).MatchedBy;
+        const svcName = (data as any).name ?? (data as any).Name;
+        const parts: string[] = [];
+        if (svcName) parts.push(String(svcName));
+        if (svcState) parts.push(String(svcState));
+        if (matchedBy) parts.push(`by=${String(matchedBy)}`);
+        if (exists === false) return 'missing';
+        return parts.length ? parts.join(' · ') : 'service';
       }
 
       if (r.checkType === 'PING') {
@@ -372,6 +385,7 @@ export function Dashboard() {
 
   const registryObjects = useMemo(() => availableObjects.filter((o) => o.checkType === 'REGISTRY_CHECK'), [availableObjects]);
   const fileObjects = useMemo(() => availableObjects.filter((o) => o.checkType === 'FILE_CHECK'), [availableObjects]);
+  const serviceObjects = useMemo(() => availableObjects.filter((o) => o.checkType === 'SERVICE_CHECK'), [availableObjects]);
   const userObjects = useMemo(() => availableObjects.filter((o) => o.checkType === 'USER_INFO'), [availableObjects]);
   // Per user request: group Ping under "System checks" in the options UI.
   const systemObjects = useMemo(
@@ -381,6 +395,7 @@ export function Dashboard() {
 
   const filteredRegistryObjects = useMemo(() => filterObjects(registryObjects, searchRegistry), [registryObjects, searchRegistry]);
   const filteredFileObjects = useMemo(() => filterObjects(fileObjects, searchFile), [fileObjects, searchFile]);
+  const filteredServiceObjects = useMemo(() => filterObjects(serviceObjects, searchService), [serviceObjects, searchService]);
   const filteredUserObjects = useMemo(() => filterObjects(userObjects, searchUser), [userObjects, searchUser]);
   const filteredSystemObjects = useMemo(() => filterObjects(systemObjects, searchSystem), [systemObjects, searchSystem]);
 
@@ -391,7 +406,7 @@ export function Dashboard() {
 
   const isNotFoundResult = (r?: LatestResult) => {
     if (!r) return false;
-    if (r.checkType !== 'REGISTRY_CHECK' && r.checkType !== 'FILE_CHECK') return false;
+    if (r.checkType !== 'REGISTRY_CHECK' && r.checkType !== 'FILE_CHECK' && r.checkType !== 'SERVICE_CHECK') return false;
     let data: any = r.resultData;
     if (typeof data === 'string') {
       const s = data.trim();
@@ -417,9 +432,13 @@ export function Dashboard() {
     if (msg.includes('path/value not found')) return true;
     if (msg.includes('registry path/value not found')) return true;
     if (msg.includes('file/path not found')) return true;
+    if (msg.includes('service not found')) return true;
 
     // Slightly broader (but still constrained to FILE_CHECK/REGISTRY_CHECK)
-    if (msg.includes('not found') && (msg.includes('registry') || msg.includes('file') || msg.includes('path') || msg.includes('value'))) {
+    if (
+      msg.includes('not found') &&
+      (msg.includes('registry') || msg.includes('file') || msg.includes('path') || msg.includes('value') || msg.includes('service'))
+    ) {
       return true;
     }
 
@@ -1151,6 +1170,64 @@ export function Dashboard() {
                             </div>
                           </div>
 
+                          {/* Service */}
+                          <div className="rounded border border-slate-800 bg-slate-950 p-4">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="text-sm font-medium text-slate-200">Service checks</div>
+                              <div className="flex items-center gap-2">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="border-slate-700 bg-slate-950 hover:bg-slate-900"
+                                  onClick={() => toggleAllObjects(serviceObjects, true)}
+                                  disabled={serviceObjects.length === 0}
+                                >
+                                  All
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="border-slate-700 bg-slate-950 hover:bg-slate-900"
+                                  onClick={() => toggleAllObjects(serviceObjects, false)}
+                                  disabled={serviceObjects.length === 0}
+                                >
+                                  None
+                                </Button>
+                              </div>
+                            </div>
+                            <Input
+                              value={searchService}
+                              onChange={(e) => setSearchService(e.target.value)}
+                              placeholder="Search service checks…"
+                              className="mt-3 bg-slate-900 border-slate-800"
+                            />
+                            <div className="mt-3 max-h-56 overflow-auto pr-1 space-y-2">
+                              {serviceObjects.length === 0 ? (
+                                <div className="text-sm text-slate-500">No service objects collected yet.</div>
+                              ) : (
+                                filteredServiceObjects.map((o) => {
+                                  const key = makeObjectKey(o.checkType, o.checkName);
+                                  return (
+                                    <label key={key} className="flex items-start gap-3">
+                                      <Checkbox
+                                        checked={!!selectedObjectKeys[key]}
+                                        onCheckedChange={(checked) =>
+                                          setSelectedObjectKeys((prev) => ({ ...prev, [key]: checked as boolean }))
+                                        }
+                                      />
+                                      <div className="min-w-0">
+                                        <div className="text-slate-300 text-sm truncate" title={`${o.checkType} · ${o.checkName}`}>
+                                          {o.checkName}
+                                        </div>
+                                        <div className="text-slate-500 text-xs font-mono truncate">{o.checkType}</div>
+                                      </div>
+                                    </label>
+                                  );
+                                })
+                              )}
+                            </div>
+                          </div>
+
                           {/* User */}
                           <div className="rounded border border-slate-800 bg-slate-950 p-4">
                             <div className="flex items-center justify-between gap-2">
@@ -1345,9 +1422,9 @@ export function Dashboard() {
                       <td className="p-4">
                         <div className="flex items-center gap-2 min-w-0">
                           <Link
-                            to={`/pc-viewer?machineId=${encodeURIComponent(machine.id)}`}
+                            to={`/data-viewer?tab=pc-history&machineId=${encodeURIComponent(machine.id)}`}
                             className="font-mono text-sm text-cyan-300 hover:text-cyan-200 underline-offset-2 hover:underline truncate"
-                            title="View PC viewer"
+                            title="View PC History"
                           >
                             {machine.hostname}
                           </Link>

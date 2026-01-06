@@ -260,6 +260,23 @@ export function DataViewer() {
         return parts.join(' · ');
       }
 
+      if (result.checkType === 'SERVICE_CHECK') {
+        const existsSvc = (data.exists ?? (data as any).Exists) as boolean | undefined;
+        const svcName = (data.name ?? (data as any).Name) as string | undefined;
+        const displayName = (data.displayName ?? (data as any).DisplayName) as string | undefined;
+        const state = (data.state ?? (data as any).State ?? data.status) as string | undefined;
+        const startMode = (data.startMode ?? (data as any).StartMode) as string | undefined;
+        const pathName = (data.pathName ?? (data as any).PathName) as string | undefined;
+        const parts: string[] = [];
+        if (svcName) parts.push(svcName);
+        if (displayName && displayName !== svcName) parts.push(displayName);
+        if (existsSvc !== undefined) parts.push(`exists=${existsSvc}`);
+        if (state) parts.push(`state=${state}`);
+        if (startMode) parts.push(`start=${startMode}`);
+        if (pathName) parts.push(pathName);
+        return parts.length ? parts.join(' · ') : 'service';
+      }
+
       if (result.checkType === 'REGISTRY_CHECK' && (exists !== undefined || path)) {
         const valueName = (data.valueName ?? data.value_name) as string | undefined;
         const value = data.value;
@@ -421,7 +438,7 @@ export function DataViewer() {
 
   const isNotFoundResult = (result: any) => {
     if (!result) return false;
-    if (result.checkType !== 'REGISTRY_CHECK' && result.checkType !== 'FILE_CHECK') return false;
+    if (result.checkType !== 'REGISTRY_CHECK' && result.checkType !== 'FILE_CHECK' && result.checkType !== 'SERVICE_CHECK') return false;
     let data: any = result.resultData;
     if (typeof data === 'string') {
       const s = data.trim();
@@ -515,6 +532,7 @@ export function DataViewer() {
                 <SelectItem value="PING">Ping</SelectItem>
                 <SelectItem value="REGISTRY_CHECK">Registry Check</SelectItem>
                 <SelectItem value="FILE_CHECK">File Check</SelectItem>
+                <SelectItem value="SERVICE_CHECK">Service Check</SelectItem>
                 <SelectItem value="USER_INFO">User Info</SelectItem>
                 <SelectItem value="SYSTEM_INFO">System Info</SelectItem>
               </SelectContent>

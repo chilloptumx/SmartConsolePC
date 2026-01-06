@@ -244,9 +244,10 @@ export function Scheduling({ embedded = false }: { embedded?: boolean }) {
                       <SelectItem value="PING">Ping</SelectItem>
                       <SelectItem value="REGISTRY_CHECK">Registry Check</SelectItem>
                       <SelectItem value="FILE_CHECK">File Check</SelectItem>
+                      <SelectItem value="SERVICE_CHECK">Service Check</SelectItem>
                       <SelectItem value="USER_INFO">User Info</SelectItem>
                       <SelectItem value="SYSTEM_INFO">System Info</SelectItem>
-                    <SelectItem value="BASELINE_CHECK">Everything Else (System + Registry + File)</SelectItem>
+                      <SelectItem value="BASELINE_CHECK">Everything Else (System + Registry + File + Service)</SelectItem>
                       <SelectItem value="FULL_CHECK">Full Check (All)</SelectItem>
                     </SelectContent>
                   </Select>
@@ -368,7 +369,7 @@ export function Scheduling({ embedded = false }: { embedded?: boolean }) {
                   className="bg-slate-900 border-slate-800 font-mono text-slate-200"
                 />
                 <div className="text-[11px] text-slate-500">
-                  Runs: System checks + Registry checks + File checks (no Ping/User)
+                  Runs: System checks + Registry checks + File checks + Service checks (no Ping/User)
                 </div>
               </div>
             </div>

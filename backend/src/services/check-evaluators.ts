@@ -95,4 +95,42 @@ export function evaluateFileCheckResult(
   return { status, message, data };
 }
 
+type ServiceCheckLike = {
+  serviceName?: string | null;
+  executablePath?: string | null;
+  expectedStatus?: string | null;
+};
+
+export function evaluateServiceCheckResult(
+  check: ServiceCheckLike,
+  ps: PowerShellResultLike
+): { status: CheckStatus; message?: string; data: any } {
+  const data = parseResultData(ps.output);
+
+  let status: CheckStatus = ps.success ? 'SUCCESS' : 'FAILED';
+  let message: string | undefined = ps.error?.trim() || undefined;
+
+  const exists =
+    data && typeof data === 'object' && !Array.isArray(data) ? (data as any).exists : undefined;
+
+  if (exists === false) {
+    status = 'FAILED';
+    message = message || 'Service not found';
+    return { status, message, data };
+  }
+
+  // Compare expected state when available. Common states: Running, Stopped, Paused, StartPending, StopPending.
+  const expected = (check.expectedStatus ?? '').toString().trim();
+  const isTracking = expected.toLowerCase() === 'tracking';
+  if (!isTracking && expected && data && typeof data === 'object' && !Array.isArray(data)) {
+    const actual = ((data as any).state ?? (data as any).status ?? (data as any).State ?? '').toString().trim();
+    if (actual && actual.toLowerCase() !== expected.toLowerCase()) {
+      status = 'WARNING';
+      message = `Expected "${expected}" but got "${actual}"`;
+    }
+  }
+
+  return { status, message, data };
+}
+
 

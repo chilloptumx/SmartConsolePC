@@ -209,7 +209,7 @@ function badgeForStatus(s?: CheckStatus) {
 
 function isNotFoundResult(r: any): boolean {
   if (!r) return false;
-  if (r.checkType !== 'REGISTRY_CHECK' && r.checkType !== 'FILE_CHECK') return false;
+  if (r.checkType !== 'REGISTRY_CHECK' && r.checkType !== 'FILE_CHECK' && r.checkType !== 'SERVICE_CHECK') return false;
   let data: any = r.resultData;
   if (typeof data === 'string') {
     const s = data.trim();
@@ -230,6 +230,7 @@ export function AdHocScan() {
   const [machines, setMachines] = useState<any[]>([]);
   const [registryChecks, setRegistryChecks] = useState<any[]>([]);
   const [fileChecks, setFileChecks] = useState<any[]>([]);
+  const [serviceChecks, setServiceChecks] = useState<any[]>([]);
   const [userChecks, setUserChecks] = useState<any[]>([]);
   const [systemChecks, setSystemChecks] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -247,11 +248,13 @@ export function AdHocScan() {
   // Config selections
   const [selectedRegistry, setSelectedRegistry] = useState<Record<string, boolean>>({});
   const [selectedFile, setSelectedFile] = useState<Record<string, boolean>>({});
+  const [selectedService, setSelectedService] = useState<Record<string, boolean>>({});
   const [selectedUser, setSelectedUser] = useState<Record<string, boolean>>({});
   const [selectedSystem, setSelectedSystem] = useState<Record<string, boolean>>({});
 
   const [searchRegistry, setSearchRegistry] = useState('');
   const [searchFile, setSearchFile] = useState('');
+  const [searchService, setSearchService] = useState('');
   const [searchUser, setSearchUser] = useState('');
   const [searchSystem, setSearchSystem] = useState('');
 
@@ -281,16 +284,18 @@ export function AdHocScan() {
     const load = async () => {
       try {
         setLoading(true);
-        const [m, rc, fc, uc, sc] = await Promise.all([
+        const [m, rc, fc, svc, uc, sc] = await Promise.all([
           api.getMachines(),
           api.getRegistryChecks(),
           api.getFileChecks(),
+          api.getServiceChecks(),
           api.getUserChecks(),
           api.getSystemChecks(),
         ]);
         setMachines(m);
         setRegistryChecks(rc);
         setFileChecks(fc);
+        setServiceChecks(svc);
         setUserChecks(uc);
         setSystemChecks(sc);
       } catch (e: any) {
@@ -324,6 +329,10 @@ export function AdHocScan() {
       const fc = fileChecks.find((x) => x.id === id);
       if (fc) objects.push({ checkType: 'FILE_CHECK', checkName: fc.name });
     }
+    for (const id of selectedIds(selectedService)) {
+      const svc = serviceChecks.find((x) => x.id === id);
+      if (svc) objects.push({ checkType: 'SERVICE_CHECK', checkName: svc.name });
+    }
     for (const id of selectedIds(selectedUser)) {
       const uc = userChecks.find((x) => x.id === id);
       if (uc) objects.push({ checkType: 'USER_INFO', checkName: uc.name });
@@ -347,10 +356,12 @@ export function AdHocScan() {
     builtSystemInfo,
     selectedRegistry,
     selectedFile,
+    selectedService,
     selectedUser,
     selectedSystem,
     registryChecks,
     fileChecks,
+    serviceChecks,
     userChecks,
     systemChecks,
   ]);
@@ -414,6 +425,7 @@ export function AdHocScan() {
           builtIns: { ping: builtPing, userInfo: builtUserInfo, systemInfo: builtSystemInfo },
           registryCheckIds: selectedIds(selectedRegistry),
           fileCheckIds: selectedIds(selectedFile),
+          serviceCheckIds: selectedIds(selectedService),
           userCheckIds: selectedIds(selectedUser),
           systemCheckIds: selectedIds(selectedSystem),
         };
@@ -457,6 +469,7 @@ export function AdHocScan() {
         builtIns: { ping: builtPing, userInfo: builtUserInfo, systemInfo: builtSystemInfo },
         registryCheckIds: selectedIds(selectedRegistry),
         fileCheckIds: selectedIds(selectedFile),
+        serviceCheckIds: selectedIds(selectedService),
         userCheckIds: selectedIds(selectedUser),
         systemCheckIds: selectedIds(selectedSystem),
       };
@@ -587,6 +600,7 @@ export function AdHocScan() {
 
   const filteredRegistry = useMemo(() => filterList(registryChecks, searchRegistry), [registryChecks, searchRegistry]);
   const filteredFile = useMemo(() => filterList(fileChecks, searchFile), [fileChecks, searchFile]);
+  const filteredService = useMemo(() => filterList(serviceChecks, searchService), [serviceChecks, searchService]);
   const filteredUser = useMemo(() => filterList(userChecks, searchUser), [userChecks, searchUser]);
   const filteredSystem = useMemo(() => filterList(systemChecks, searchSystem), [systemChecks, searchSystem]);
   const showBuiltPingInSystem = useMemo(() => {
@@ -817,6 +831,54 @@ export function AdHocScan() {
                       <Checkbox
                         checked={Boolean(selectedFile[c.id])}
                         onCheckedChange={(v) => setSelectedFile((p) => ({ ...p, [c.id]: Boolean(v) }))}
+                      />
+                      <span>
+                        <span className="font-mono">{c.name}</span>{' '}
+                        {!c.isActive && <span className="text-xs text-slate-500">(inactive)</span>}
+                      </span>
+                    </label>
+                  ))
+                )}
+              </div>
+            </div>
+
+            <div className="rounded border border-slate-800 bg-slate-950 p-4">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-sm font-medium text-slate-200">Service checks</div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="border-slate-700 bg-slate-950 hover:bg-slate-900"
+                    onClick={() => toggleAll(serviceChecks, setSelectedService, true)}
+                  >
+                    All
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="border-slate-700 bg-slate-950 hover:bg-slate-900"
+                    onClick={() => toggleAll(serviceChecks, setSelectedService, false)}
+                  >
+                    None
+                  </Button>
+                </div>
+              </div>
+              <Input
+                value={searchService}
+                onChange={(e) => setSearchService(e.target.value)}
+                placeholder="Search service checks…"
+                className="mt-3 bg-slate-950 border-slate-800"
+              />
+              <div className="mt-3 max-h-48 overflow-auto space-y-2 pr-1">
+                {filteredService.length === 0 ? (
+                  <div className="text-xs text-slate-500">No service checks configured.</div>
+                ) : (
+                  filteredService.map((c) => (
+                    <label key={c.id} className="flex items-start gap-2 text-sm text-slate-300">
+                      <Checkbox
+                        checked={Boolean(selectedService[c.id])}
+                        onCheckedChange={(v) => setSelectedService((p) => ({ ...p, [c.id]: Boolean(v) }))}
                       />
                       <span>
                         <span className="font-mono">{c.name}</span>{' '}
